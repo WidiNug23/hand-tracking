@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hand Geometry & Smooth Comet (Auto-Split)</title>
+    <title>Hand Geometry & Smooth Comet (Safe Render)</title>
     <style>
         body {
             margin: 0;
@@ -151,18 +151,18 @@
                     detectedHands.push({ avgX, tips: tipDict });
                 }
 
-                // Urutkan tangan berdasarkan posisi X di layar (Kiri vs Kanan)
+                // Urutkan tangan berdasarkan posisi X di layar
                 detectedHands.sort((a, b) => a.avgX - b.avgX);
             }
 
             let leftHandTips = detectedHands.length > 0 ? detectedHands[0].tips : null;
             let rightHandTips = detectedHands.length > 1 ? detectedHands[1].tips : null;
 
-            // Update Riwayat Ekor Komet (Trail)
+            // Update Trail amankah
             updateTrail(leftHandTips, trailHistory1);
             updateTrail(rightHandTips, trailHistory2);
 
-            // LOGIKA GEOMETRI UTAMA
+            // LOGIKA GEOMETRI UTAMA DENGAN AMAN
             if (leftHandTips && rightHandTips) {
                 statusElement.innerText = "Dual-Hand Geometry Active (2 Tangan)";
                 let indices = [0, 1, 2, 3, 4];
@@ -173,7 +173,6 @@
                     'rgba(100, 255, 0, 0.45)'     
                 ];
 
-                // Hubungkan sisi antar titik jari kedua tangan
                 for (let i = 0; i < indices.length - 1; i++) {
                     let i1 = indices[i], i2 = indices[i+1];
                     
@@ -196,7 +195,8 @@
                 let hand = leftHandTips || rightHandTips;
                 
                 canvasCtx.beginPath();
-                Object.keys(hand).sort().forEach((k, idx) => {
+                let keys = Object.keys(hand).sort();
+                keys.forEach((k, idx) => {
                     let pt = hand[k];
                     if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
                     else canvasCtx.lineTo(pt.x, pt.y);
@@ -210,7 +210,6 @@
                 canvasCtx.stroke();
             } else {
                 statusElement.innerText = "Arahkan tangan ke kamera...";
-                // Kosongkan riwayat jika tidak ada tangan
                 clearTrail(trailHistory1);
                 clearTrail(trailHistory2);
             }
@@ -236,14 +235,16 @@
 
         function clearTrail(historyDict) {
             for (let idx in historyDict) {
-                if (historyDict[idx].length > 0) historyDict[idx].pop();
+                if (historyDict[idx] && historyDict[idx].length > 0) {
+                    historyDict[idx].pop();
+                }
             }
         }
 
         function drawSmoothCometTrails(historyDict) {
             for (let idx in historyDict) {
                 let pts = historyDict[idx];
-                if (pts.length < 2) continue;
+                if (!pts || pts.length < 2) continue;
 
                 for (let i = 0; i < pts.length - 1; i++) {
                     let progress = i / pts.length;
