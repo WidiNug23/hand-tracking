@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hand Geometry & Smooth Comet (Fixed)</title>
+    <title>Hand Geometry & Straight Polygon (Mosaic & Random Styles)</title>
     <style>
         body {
             margin: 0;
@@ -21,12 +21,12 @@
         #container {
             position: relative;
             width: 100%;
-            max-width: 640px;
-            aspect-ratio: 4/3;
+            max-width: 854px;
+            aspect-ratio: 16/9;
             background: #111;
             border-radius: 12px;
             overflow: hidden;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.8);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
         }
         video, canvas {
             position: absolute;
@@ -42,15 +42,14 @@
             top: 15px;
             left: 15px;
             background: rgba(0, 0, 0, 0.7);
-            color: #fff;
             padding: 8px 12px;
             border-radius: 6px;
             font-size: 14px;
             z-index: 10;
-            border: 1px solid rgba(255,255,255,0.3);
         }
     </style>
 
+    <!-- Memuat Library MediaPipe Hands & Camera Utils -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 </head>
@@ -62,6 +61,7 @@
         <canvas id="output_canvas"></canvas>
     </div>
 
+    <!-- Hidden Canvas untuk pemrosesan filter gambar -->
     <canvas id="hidden_canvas" style="display:none;"></canvas>
 
     <script>
@@ -74,32 +74,33 @@
 
         const statusElement = document.getElementById('status');
 
-        const FINGER_TIPS = [4, 8, 12, 16, 20];
+        const FINGER_TIPS = [4, 8, 12, 16, 20]; // [Jempol, Telunjuk, Tengah, Manis, Kelingking]
+        const FINGER_BASES = [2, 5, 9, 13, 17];  
         
-        let smoothLeft = {};
-        let smoothRight = {};
-        let handVelocity = 0.0;
-        const ALPHA = 0.6;
+        let trailHistoryLeft = {0: [], 1: [], 2: [], 3: [], 4: []};
+        let trailHistoryRight = {0: [], 1: [], 2: [], 3: [], 4: []};
+        let isRunningAI = false;
 
         let colorIndex = 0;
         let effectIndex = 0;
         let isFistedPrev = false;
         let prevAvgCenter = null;
-        let isRunningAI = false;
+
+        // State untuk 5 mode toggle 2 tangan (0: Khusus, 1: 4 Warna, 2: Cyber Neon, 3: Mozaik, 4: Random Gabungan)
+        let modeStateIndex = 0;
+        let isClappingPrev = false;
+        let lastClapToggleTime = 0;
 
         const COLORS = [
-            {r: 0,   g: 0,   b: 255, name: "Merah"},
-            {r: 255, g: 0,   b: 0,   name: "Biru"},
-            {r: 0,   g: 255, b: 255, name: "Kuning"},
-            {r: 0,   g: 255, b: 0,   name: "Hijau"},
-            {r: 255, g: 0,   b: 255, name: "Magenta"},
-            {r: 255, g: 128, b: 0,   name: "Oranye"}
+            {r: 0, g: 0, b: 255, name: "Merah", hex: "#0000FF"},
+            {r: 255, g: 0, b: 0, name: "Biru", hex: "#FF0000"},
+            {r: 0, g: 255, b: 255, name: "Kuning", hex: "#00FFFF"},
+            {r: 0, g: 255, b: 0, name: "Hijau", hex: "#00FF00"},
+            {r: 255, g: 0, b: 255, name: "Magenta", hex: "#FF00FF"},
+            {r: 255, g: 128, b: 0, name: "Oranye", hex: "#FF8000"}
         ];
 
-        const EFFECT_MODES = ['normal', 'mono', 'negative', 'sepia', 'bright'];
-
-        let trailHistoryLeft = {0: [], 1: [], 2: [], 3: [], 4: []};
-        let trailHistoryRight = {0: [], 1: [], 2: [], 3: [], 4: []};
+        const EFFECT_MODES = ['normal', 'mono', 'negative', 'sepia', 'bright', 'thermal', 'heat', 'zebra', 'mosaic', 'cyber'];
 
         const hands = new Hands({
             locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
@@ -113,7 +114,7 @@
         });
 
         hands.onResults(results => {
-            isRunningAI = false;
+            isRunningAI = false; 
             try {
                 renderFrame(results);
             } catch (err) {
@@ -125,343 +126,363 @@
             onFrame: async () => {
                 if (videoElement.readyState >= 2) {
                     if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
-                        canvasElement.width = videoElement.videoWidth || 640;
-                        canvasElement.height = videoElement.videoHeight || 480;
+                        canvasElement.width = videoElement.videoWidth || 1280;
+                        canvasElement.height = videoElement.videoHeight || 720;
                         hiddenCanvas.width = canvasElement.width;
                         hiddenCanvas.height = canvasElement.height;
                     }
 
                     if (!isRunningAI) {
                         isRunningAI = true;
-                        await hands.send({ image: videoElement }).catch(() => {
+                        await hands.send({ image: videoElement }).catch((err) => {
+                            console.error("AI send error:", err);
                             isRunningAI = false;
                         });
                     }
                 }
             },
-            width: 640,
-            height: 480
+            width: 1280,
+            height: 720
         });
 
         camera.start()
-            .then(() => { statusElement.innerText = "Kamera Aktif - Silakan Tunjukkan Tangan"; })
-            .catch(err => { statusElement.innerText = "Gagal Akses Kamera: " + err; });
-
-        function applySmoothing(currentDict, smoothDict) {
-            let updatedDict = {};
-            for (let i in currentDict) {
-                let curr = currentDict[i];
-                if (smoothDict[i]) {
-                    let prev = smoothDict[i];
-                    let smoothX = Math.round(ALPHA * curr.x + (1 - ALPHA) * prev.x);
-                    let smoothY = Math.round(ALPHA * curr.y + (1 - ALPHA) * prev.y);
-                    updatedDict[i] = {x: smoothX, y: smoothY};
-                } else {
-                    updatedDict[i] = {x: curr.x, y: curr.y};
-                }
-            }
-            return updatedDict;
-        }
+            .then(() => { statusElement.innerText = "Arahkan tangan ke kamera..."; })
+            .catch(err => { statusElement.innerText = "Gagal akses kamera: " + err; });
 
         function checkIsFisted(landmarks, w, h) {
             let wrist = {x: landmarks[0].x * w, y: landmarks[0].y * h};
             let distances = [];
-            FINGER_TIPS.forEach(tipIdx => {
+            let foldedCount = 0;
+
+            FINGER_TIPS.forEach((tipIdx, idx) => {
                 let tip = {x: landmarks[tipIdx].x * w, y: landmarks[tipIdx].y * h};
-                distances.push(Math.hypot(tip.x - wrist.x, tip.y - wrist.y));
+                let baseIdx = FINGER_BASES[idx];
+                let base = {x: landmarks[baseIdx].x * w, y: landmarks[baseIdx].y * h};
+
+                let distWrist = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
+                distances.push(distWrist);
+
+                let distBase = Math.hypot(tip.x - base.x, tip.y - base.y);
+                if (distBase < 50.0) {
+                    foldedCount++;
+                }
             });
+
             let avgDist = distances.reduce((a, b) => a + b, 0) / distances.length;
-            return avgDist < 100.0;
+            return (avgDist < 115.0) || (foldedCount >= 4);
         }
 
-        function applyMotionWaveEffect(ptsList, velocity, timeVal) {
-            let amplitude = Math.min(Math.max(velocity * 0.4, 0.0), 12.0);
-            if (amplitude < 0.5) return ptsList;
+        function checkIsClapping(leftTips, rightTips, allLandmarks) {
+            if (!leftTips || !rightTips || allLandmarks.length < 2) return false;
 
-            return ptsList.map((pt, idx) => {
-                let offsetX = Math.round(amplitude * Math.sin(timeVal * 12 + idx * 1.5));
-                let offsetY = Math.round(amplitude * Math.cos(timeVal * 12 + idx * 1.5));
-                return {x: pt.x + offsetX, y: pt.y + offsetY};
+            let leftCenter = {
+                x: Object.values(leftTips).reduce((sum, p) => sum + p.x, 0) / 5,
+                y: Object.values(leftTips).reduce((sum, p) => sum + p.y, 0) / 5
+            };
+            let rightCenter = {
+                x: Object.values(rightTips).reduce((sum, p) => sum + p.x, 0) / 5,
+                y: Object.values(rightTips).reduce((sum, p) => sum + p.y, 0) / 5
+            };
+
+            let distanceBetweenHands = Math.hypot(leftCenter.x - rightCenter.x, leftCenter.y - rightCenter.y);
+
+            let leftWrist = {x: allLandmarks[0][0].x * canvasElement.width, y: allLandmarks[0][0].y * canvasElement.height};
+            let leftMiddleBase = {x: allLandmarks[0][9].x * canvasElement.width, y: allLandmarks[0][9].y * canvasElement.height};
+            let handScale = Math.hypot(leftMiddleBase.x - leftWrist.x, leftMiddleBase.y - leftWrist.y);
+
+            return distanceBetweenHands < (handScale * 1.0);
+        }
+
+        // Menggambar poligon lurus tanpa gelombang
+        function drawStraightPolygon(pts) {
+            if (!pts || pts.length < 3) return;
+            canvasCtx.beginPath();
+            pts.forEach((pt, idx) => {
+                if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
+                else canvasCtx.lineTo(pt.x, pt.y);
             });
+            canvasCtx.closePath();
         }
 
-        function applyPatchEffect(effectType, tintColor, w, h) {
-            hiddenCtx.clearRect(0, 0, w, h);
-            hiddenCtx.drawImage(videoElement, 0, 0, w, h);
-            let imgData = hiddenCtx.getImageData(0, 0, w, h);
+        function drawEffectPolygon(pts, effectType, tintColor, w, h) {
+            if (!pts || pts.length < 3) return;
+
+            hiddenCtx.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+            hiddenCtx.drawImage(videoElement, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
+            let imgData = hiddenCtx.getImageData(0, 0, hiddenCanvas.width, hiddenCanvas.height);
             let data = imgData.data;
 
-            for (let i = 0; i < data.length; i += 4) {
-                let r = data[i], g = data[i+1], b = data[i+2];
+            let blockSize = (effectType === 'mosaic') ? 16 : 1;
 
-                if (effectType === 'mono') {
-                    let gray = 0.299 * r + 0.587 * g + 0.114 * b;
-                    r = gray; g = gray; b = gray;
-                } else if (effectType === 'negative') {
-                    r = 255 - r;
-                    g = 255 - g;
-                    b = 255 - b;
-                } else if (effectType === 'sepia') {
-                    let tr = (r * 0.393) + (g * 0.769) + (b * 0.189);
-                    let tg = (r * 0.349) + (g * 0.686) + (b * 0.168);
-                    let tb = (r * 0.272) + (g * 0.534) + (b * 0.131);
-                    r = Math.min(255, tr); g = Math.min(255, tg); b = Math.min(255, tb);
-                } else if (effectType === 'bright') {
-                    r = Math.min(255, r * 1.3 + 25);
-                    g = Math.min(255, g * 1.3 + 25);
-                    b = Math.min(255, b * 1.3 + 25);
-                }
+            for (let yCoord = 0; yCoord < h; yCoord += blockSize) {
+                for (let xCoord = 0; xCoord < w; xCoord += blockSize) {
+                    let sampleX = Math.min(xCoord + Math.floor(blockSize / 2), w - 1);
+                    let sampleY = Math.min(yCoord + Math.floor(blockSize / 2), h - 1);
+                    let idx = (sampleY * w + sampleX) * 4;
 
-                data[i]   = r * 0.75 + tintColor.r * 0.25;
-                data[i+1] = g * 0.75 + tintColor.g * 0.25;
-                data[i+2] = b * 0.75 + tintColor.b * 0.25;
-            }
+                    let r = data[idx], g = data[idx+1], b = data[idx+2];
 
-            hiddenCtx.putImageData(imgData, 0, 0);
-        }
+                    if (effectType === 'mono') {
+                        let gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                        r = gray; g = gray; b = gray;
+                    } else if (effectType === 'negative') {
+                        // Negatif ditangani langsung lewat piksel asli
+                        for (let dy = 0; dy < blockSize && (yCoord + dy) < h; dy++) {
+                            for (let dx = 0; dx < blockSize && (xCoord + dx) < w; dx++) {
+                                let pIdx = ((yCoord + dy) * w + (xCoord + dx)) * 4;
+                                data[pIdx]   = 255 - data[pIdx];
+                                data[pIdx+1] = 255 - data[pIdx+1];
+                                data[pIdx+2] = 255 - data[pIdx+2];
+                            }
+                        }
+                        continue;
+                    } else if (effectType === 'sepia') {
+                        let tr = (r * 0.393) + (g * 0.769) + (b * 0.189);
+                        let tg = (r * 0.349) + (g * 0.686) + (b * 0.168);
+                        let tb = (r * 0.272) + (g * 0.534) + (b * 0.131);
+                        r = Math.min(255, tr); g = Math.min(255, tg); b = Math.min(255, tb);
+                    } else if (effectType === 'bright') {
+                        r = Math.min(255, r * 1.5 + 40);
+                        g = Math.min(255, g * 1.5 + 40);
+                        b = Math.min(255, b * 1.5 + 40);
+                    } else if (effectType === 'thermal') {
+                        let v = 0.299 * r + 0.587 * g + 0.114 * b;
+                        if (v < 64) { r = 0; g = 0; b = v * 4; }
+                        else if (v < 128) { r = 0; g = (v - 64) * 4; b = 255 - (v - 64) * 4; }
+                        else if (v < 192) { r = (v - 128) * 4; g = 255; b = 0; }
+                        else { r = 255; g = 255; b = (v - 192) * 4; }
+                    } else if (effectType === 'heat') {
+                        let v = 0.299 * r + 0.587 * g + 0.114 * b;
+                        r = Math.min(255, v * 2.0);
+                        g = Math.min(255, Math.max(0, (v - 100) * 2.5));
+                        b = Math.min(255, Math.max(0, (v - 180) * 4.0));
+                    } else if (effectType === 'zebra') {
+                        let stripe = (xCoord + yCoord) % 20;
+                        let val = stripe < 10 ? 0 : 255;
+                        r = val; g = val; b = val;
+                    } else if (effectType === 'cyber') {
+                        let gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                        r = gray > 100 ? 0 : 20;
+                        g = gray > 100 ? 255 : 50;
+                        b = gray > 100 ? 150 : 200;
+                    }
 
-        function drawSmoothCometTrails(trailHistory, tipToColorMap) {
-            for (let tipIdx in trailHistory) {
-                let points = trailHistory[tipIdx];
-                if (!points || points.length < 3) continue;
-
-                let trailColor = tipToColorMap[tipIdx] || {r: 0, g: 255, b: 255};
-                let numPts = points.length;
-
-                for (let i = 0; i < numPts - 1; i++) {
-                    let pt1 = points[i];
-                    let pt2 = points[i+1];
-                    let progress = i / (numPts - 1);
-                    let alpha = 0.7 * (1.0 - progress);
-                    let thickness = Math.max(1, 6 * (1.0 - progress));
-
-                    canvasCtx.beginPath();
-                    canvasCtx.moveTo(pt1.x, pt1.y);
-                    canvasCtx.lineTo(pt2.x, pt2.y);
-                    canvasCtx.strokeStyle = `rgba(${trailColor.r}, ${trailColor.g}, ${trailColor.b}, ${alpha})`;
-                    canvasCtx.lineWidth = thickness;
-                    canvasCtx.lineCap = 'round';
-                    canvasCtx.stroke();
-
-                    if (i === 0) {
-                        canvasCtx.beginPath();
-                        canvasCtx.arc(pt1.x, pt1.y, 4, 0, 2 * Math.PI);
-                        canvasCtx.fillStyle = '#FFFFFF';
-                        canvasCtx.fill();
+                    // Terapkan blok warna ke area mozaik atau piksel tunggal
+                    for (let dy = 0; dy < blockSize && (yCoord + dy) < h; dy++) {
+                        for (let dx = 0; dx < blockSize && (xCoord + dx) < w; dx++) {
+                            let pIdx = ((yCoord + dy) * w + (xCoord + dx)) * 4;
+                            data[pIdx]   = r * 0.35 + tintColor.r * 0.65;
+                            data[pIdx+1] = g * 0.35 + tintColor.g * 0.65;
+                            data[pIdx+2] = b * 0.35 + tintColor.b * 0.65;
+                        }
                     }
                 }
             }
+
+            hiddenCtx.putImageData(imgData, 0, 0);
+
+            canvasCtx.save();
+            drawStraightPolygon(pts);
+            canvasCtx.clip();
+            canvasCtx.drawImage(hiddenCanvas, 0, 0);
+            canvasCtx.restore();
+
+            canvasCtx.save();
+            drawStraightPolygon(pts);
+            canvasCtx.strokeStyle = effectType === 'cyber' ? '#00FFCC' : '#FFFFFF';
+            canvasCtx.lineWidth = 2.5;
+            canvasCtx.stroke();
+            canvasCtx.restore();
         }
 
         function renderFrame(results) {
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-
+            
             if (results.image) {
                 canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
             }
 
             let w = canvasElement.width;
             let h = canvasElement.height;
-
-            let currentLeft = {};
-            let currentRight = {};
+            let detectedHands = [];
             let isCurrentFisted = false;
-            let numHandsDetected = 0;
 
-            // Validasi aman untuk mencegah error undefined pada properti array MediaPipe
-            if (results.multiHandLandmarks && results.multiHandedness && 
-                results.multiHandLandmarks.length > 0 && results.multiHandedness.length > 0) {
-                
-                numHandsDetected = results.multiHandLandmarks.length;
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                let numHands = results.multiHandLandmarks.length;
 
-                for (let idx = 0; idx < numHandsDetected; idx++) {
-                    let handLandmarks = results.multiHandLandmarks[idx];
-                    let classification = results.multiHandedness[idx]?.classification;
-                    
-                    if (!handLandmarks || !classification || classification.length === 0) continue;
+                for (let i = 0; i < numHands; i++) {
+                    const landmarks = results.multiHandLandmarks[i];
+                    let tipDict = {};
+                    let avgX = 0;
 
-                    let handedness = classification[0].label;
-                    let actualHand = (handedness === "Left") ? "Right" : "Left";
-
-                    if (numHandsDetected === 1) {
-                        isCurrentFisted = checkIsFisted(handLandmarks, w, h);
+                    if (numHands === 1 && checkIsFisted(landmarks, w, h)) {
+                        isCurrentFisted = true;
                     }
 
-                    let fingertipDict = {};
-                    FINGER_TIPS.forEach((tipIdx, i) => {
-                        let cx = Math.round(handLandmarks[tipIdx].x * w);
-                        let cy = Math.round(handLandmarks[tipIdx].y * h);
-                        fingertipDict[i] = {x: cx, y: cy};
-
-                        if (actualHand === "Left") {
-                            trailHistoryLeft[i].unshift({x: cx, y: cy});
-                            if (trailHistoryLeft[i].length > 15) trailHistoryLeft[i].pop();
-                        } else {
-                            trailHistoryRight[i].unshift({x: cx, y: cy});
-                            if (trailHistoryRight[i].length > 15) trailHistoryRight[i].pop();
-                        }
+                    FINGER_TIPS.forEach((tipIdx, idx) => {
+                        const x = landmarks[tipIdx].x * w;
+                        const y = landmarks[tipIdx].y * h;
+                        tipDict[idx] = {x, y};
+                        avgX += x;
                     });
+                    avgX /= FINGER_TIPS.length;
 
-                    if (actualHand === "Left") currentLeft = fingertipDict;
-                    else currentRight = fingertipDict;
+                    detectedHands.push({ avgX, tips: tipDict });
                 }
-            } else {
-                for (let i = 0; i < 5; i++) {
-                    trailHistoryLeft[i] = [];
-                    trailHistoryRight[i] = [];
-                }
+
+                detectedHands.sort((a, b) => a.avgX - b.avgX);
             }
 
-            if (numHandsDetected === 1 && isCurrentFisted && !isFistedPrev) {
+            if (detectedHands.length === 1 && isCurrentFisted && !isFistedPrev) {
                 colorIndex = (colorIndex + 1) % COLORS.length;
                 effectIndex = (effectIndex + 1) % EFFECT_MODES.length;
             }
             isFistedPrev = isCurrentFisted;
 
-            smoothLeft = applySmoothing(currentLeft, smoothLeft);
-            smoothRight = applySmoothing(currentRight, smoothRight);
-            if (Object.keys(currentLeft).length === 0) smoothLeft = {};
-            if (Object.keys(currentRight).length === 0) smoothRight = {};
-
-            let currentCenters = [];
-            if (Object.keys(smoothLeft).length > 0) {
-                let avgX = Object.values(smoothLeft).reduce((s, p) => s + p.x, 0) / 5;
-                let avgY = Object.values(smoothLeft).reduce((s, p) => s + p.y, 0) / 5;
-                currentCenters.push({x: avgX, y: avgY});
-            }
-            if (Object.keys(smoothRight).length > 0) {
-                let avgX = Object.values(smoothRight).reduce((s, p) => s + p.x, 0) / 5;
-                let avgY = Object.values(smoothRight).reduce((s, p) => s + p.y, 0) / 5;
-                currentCenters.push({x: avgX, y: avgY});
-            }
-
-            if (currentCenters.length > 0) {
-                let currAvgCenter = {
-                    x: currentCenters.reduce((s, c) => s + c.x, 0) / currentCenters.length,
-                    y: currentCenters.reduce((s, c) => s + c.y, 0) / currentCenters.length
-                };
-                if (prevAvgCenter) {
-                    handVelocity = Math.hypot(currAvgCenter.x - prevAvgCenter.x, currAvgCenter.y - prevAvgCenter.y);
-                }
-                prevAvgCenter = currAvgCenter;
-            } else {
-                handVelocity = 0.0;
-            }
+            let leftTips = detectedHands.length > 0 ? detectedHands[0].tips : null;
+            let rightTips = detectedHands.length > 1 ? detectedHands[1].tips : null;
 
             let tNow = performance.now() / 1000;
-            let tipToColorMap = {};
             let modeDesc = "Menunggu Tangan...";
 
-            let activeHandData = null;
-            if (Object.keys(smoothLeft).length > 0 && Object.keys(smoothRight).length === 0) {
-                activeHandData = smoothLeft;
-            } else if (Object.keys(smoothRight).length > 0 && Object.keys(smoothLeft).length === 0) {
-                activeHandData = smoothRight;
-            }
-
-            if (activeHandData) {
+            if (detectedHands.length === 1) {
+                let activeTips = detectedHands[0].tips;
                 let activeColor = COLORS[colorIndex];
                 let activeEffect = EFFECT_MODES[effectIndex];
-                modeDesc = `Satu Tangan | Warna: ${colorIndex+1} | Efek: ${activeEffect.toUpperCase()}`;
+                modeDesc = `Satu Tangan | Warna: ${activeColor.name} | Efek: ${activeEffect.toUpperCase()}`;
 
-                for (let i in activeHandData) {
-                    tipToColorMap[i] = activeColor;
-                }
+                updateTrail(activeTips, trailHistoryLeft);
+                clearTrailCompletely(trailHistoryRight);
 
-                let sortedIndices = Object.keys(activeHandData).map(Number).sort((a,b) => a - b);
-                let ptsList = sortedIndices.map(i => activeHandData[i]);
-
-                if (ptsList.length >= 3) {
-                    let wavyPts = applyMotionWaveEffect(ptsList, handVelocity, tNow);
-                    
-                    applyPatchEffect(activeEffect, activeColor, w, h);
-
-                    canvasCtx.save();
-                    canvasCtx.beginPath();
-                    wavyPts.forEach((pt, idx) => {
-                        if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
-                        else canvasCtx.lineTo(pt.x, pt.y);
-                    });
-                    canvasCtx.closePath();
-                    canvasCtx.clip();
-
-                    canvasCtx.drawImage(hiddenCanvas, 0, 0);
-                    canvasCtx.restore();
-
-                    canvasCtx.beginPath();
-                    wavyPts.forEach((pt, idx) => {
-                        if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
-                        else canvasCtx.lineTo(pt.x, pt.y);
-                    });
-                    canvasCtx.closePath();
-                    canvasCtx.strokeStyle = '#FFFFFF';
-                    canvasCtx.lineWidth = 1;
-                    canvasCtx.stroke();
+                let pts = Object.keys(activeTips).sort().map(k => activeTips[k]);
+                if (pts.length >= 3) {
+                    drawEffectPolygon(pts, activeEffect, activeColor, w, h);
                 }
             } 
-            else if (Object.keys(smoothLeft).length > 0 && Object.keys(smoothRight).length > 0) {
-                modeDesc = "Dua Tangan (Multi-Color & Multi-Effect 4 Sisi)";
-                let availableIndices = [0, 1, 2, 3, 4].filter(i => smoothLeft[i] && smoothRight[i]);
+            else if (detectedHands.length >= 2) {
+                updateTrail(leftTips, trailHistoryLeft);
+                updateTrail(rightTips, trailHistoryRight);
 
-                let sidePalette = [
-                    {color: COLORS[0], effect: 'mono'},
-                    {color: COLORS[1], effect: 'negative'},
-                    {color: COLORS[2], effect: 'sepia'},
-                    {color: COLORS[3], effect: 'bright'}
-                ];
+                let isClappingNow = checkIsClapping(leftTips, rightTips, results.multiHandLandmarks);
+                
+                // Toggle 5 mode secara bergantian saat clap
+                if (isClappingNow && !isClappingPrev && (tNow - lastClapToggleTime > 1.0)) {
+                    modeStateIndex = (modeStateIndex + 1) % 5;
+                    lastClapToggleTime = tNow;
+                }
+                isClappingPrev = isClappingNow;
 
-                if (availableIndices.length >= 2) {
-                    for (let idx = 0; idx < availableIndices.length - 1; idx++) {
-                        let i1 = availableIndices[idx];
-                        let i2 = availableIndices[idx + 1];
+                let sidePalette = [];
 
-                        if (smoothLeft[i1] && smoothLeft[i2] && smoothRight[i1] && smoothRight[i2]) {
-                            let quadRaw = [
-                                smoothLeft[i1],
-                                smoothLeft[i2],
-                                smoothRight[i2],
-                                smoothRight[i1]
-                            ];
-                            let wavyQuad = applyMotionWaveEffect(quadRaw, handVelocity, tNow + idx * 0.2);
-                            let sideStyle = sidePalette[idx % sidePalette.length];
+                if (modeStateIndex === 0) {
+                    modeDesc = "Mode 1: Efek Khusus (Zebra, Thermal, Heat, Negative)";
+                    sidePalette = [
+                        {effect: 'zebra', color: COLORS[0]},
+                        {effect: 'thermal', color: COLORS[1]},
+                        {effect: 'heat', color: COLORS[2]},
+                        {effect: 'negative', color: COLORS[3]}
+                    ];
+                } else if (modeStateIndex === 1) {
+                    modeDesc = "Mode 2: 4 Warna Penuh";
+                    sidePalette = [
+                        {effect: 'normal', color: COLORS[0]}, 
+                        {effect: 'normal', color: COLORS[2]}, 
+                        {effect: 'normal', color: COLORS[3]}, 
+                        {effect: 'normal', color: COLORS[5]}  
+                    ];
+                } else if (modeStateIndex === 2) {
+                    modeDesc = "Mode 3: Cyber Neon Matrix Style";
+                    sidePalette = [
+                        {effect: 'cyber', color: COLORS[1]}, 
+                        {effect: 'cyber', color: COLORS[3]}, 
+                        {effect: 'cyber', color: COLORS[4]}, 
+                        {effect: 'cyber', color: COLORS[5]}  
+                    ];
+                } else if (modeStateIndex === 3) {
+                    modeDesc = "Mode 4: Mozaik Piksel Art";
+                    sidePalette = [
+                        {effect: 'mosaic', color: COLORS[0]}, 
+                        {effect: 'mosaic', color: COLORS[2]}, 
+                        {effect: 'mosaic', color: COLORS[3]}, 
+                        {effect: 'mosaic', color: COLORS[4]}  
+                    ];
+                } else {
+                    modeDesc = "Mode 5: Random Gabungan Style";
+                    sidePalette = [
+                        {effect: 'mosaic', color: COLORS[0]}, 
+                        {effect: 'cyber', color: COLORS[1]}, 
+                        {effect: 'thermal', color: COLORS[2]}, 
+                        {effect: 'zebra', color: COLORS[5]}  
+                    ];
+                }
 
-                            tipToColorMap[i1] = sideStyle.color;
-                            tipToColorMap[i2] = sideStyle.color;
-
-                            applyPatchEffect(sideStyle.effect, sideStyle.color, w, h);
-
-                            canvasCtx.save();
-                            canvasCtx.beginPath();
-                            wavyQuad.forEach((pt, pIdx) => {
-                                if (pIdx === 0) canvasCtx.moveTo(pt.x, pt.y);
-                                else canvasCtx.lineTo(pt.x, pt.y);
-                            });
-                            canvasCtx.closePath();
-                            canvasCtx.clip();
-
-                            canvasCtx.drawImage(hiddenCanvas, 0, 0);
-                            canvasCtx.restore();
-
-                            canvasCtx.beginPath();
-                            wavyQuad.forEach((pt, pIdx) => {
-                                if (pIdx === 0) canvasCtx.moveTo(pt.x, pt.y);
-                                else canvasCtx.lineTo(pt.x, pt.y);
-                            });
-                            canvasCtx.closePath();
-                            canvasCtx.strokeStyle = '#FFFFFF';
-                            canvasCtx.lineWidth = 1;
-                            canvasCtx.stroke();
-                        }
+                for (let i = 0; i < 4; i++) {
+                    let i1 = i, i2 = i + 1;
+                    if (leftTips && leftTips[i1] && leftTips[i2] && rightTips && rightTips[i1] && rightTips[i2]) {
+                        let quadPoints = [
+                            leftTips[i1], 
+                            leftTips[i2], 
+                            rightTips[i2], 
+                            rightTips[i1]
+                        ];
+                        let sideStyle = sidePalette[i % sidePalette.length];
+                        
+                        drawEffectPolygon(quadPoints, sideStyle.effect, sideStyle.color, w, h);
                     }
                 }
+            } else {
+                clearTrailCompletely(trailHistoryLeft);
+                clearTrailCompletely(trailHistoryRight);
             }
 
-            drawSmoothCometTrails(trailHistoryLeft, tipToColorMap);
-            drawSmoothCometTrails(trailHistoryRight, tipToColorMap);
+            drawCometTrails(trailHistoryLeft);
+            drawCometTrails(trailHistoryRight);
 
             statusElement.innerText = modeDesc;
             canvasCtx.restore();
+        }
+
+        function updateTrail(handTips, historyDict) {
+            if (!handTips) {
+                clearTrailCompletely(historyDict);
+                return;
+            }
+            for (let idx in handTips) {
+                let pt = handTips[idx];
+                if (!historyDict[idx]) historyDict[idx] = [];
+                historyDict[idx].unshift({x: pt.x, y: pt.y});
+                if (historyDict[idx].length > 6) historyDict[idx].pop();
+            }
+        }
+
+        function clearTrailCompletely(historyDict) {
+            for (let idx in historyDict) {
+                if (historyDict[idx].length > 0) {
+                    historyDict[idx] = [];
+                }
+            }
+        }
+
+        function drawCometTrails(historyDict) {
+            for (let idx in historyDict) {
+                let pts = historyDict[idx];
+                if (!pts || pts.length < 2) continue;
+
+                for (let i = 0; i < pts.length - 1; i++) {
+                    let progress = i / pts.length;
+                    let alpha = 0.9 * (1.0 - progress);
+                    let thickness = Math.max(1.5, 6 * (1.0 - progress));
+
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(pts[i].x, pts[i].y);
+                    canvasCtx.lineTo(pts[i+1].x, pts[i+1].y);
+                    canvasCtx.strokeStyle = `rgba(0, 255, 255, ${alpha})`;
+                    canvasCtx.lineWidth = thickness;
+                    canvasCtx.lineCap = 'round';
+                    canvasCtx.stroke();
+                }
+            }
         }
     </script>
 </body>
