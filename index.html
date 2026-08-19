@@ -2,15 +2,15 @@
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hand Geometry & Mobile Ultra Smooth</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Hand Geometry & Native Mobile Camera</title>
     <style>
         * {
             box-sizing: border-box;
         }
         body {
             margin: 0;
-            padding: 10px;
+            padding: 0;
             background-color: #000;
             color: #fff;
             font-family: Arial, sans-serif;
@@ -19,18 +19,17 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
-            overflow-x: hidden;
+            overflow: hidden;
         }
         #container {
             position: relative;
-            width: 100%;
-            max-width: 1280px;
-            aspect-ratio: 16/9;
-            background: #111;
-            border-radius: 12px;
+            width: 100vw;
+            height: 100vh;
+            background: #000;
             overflow: hidden;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-            transition: aspect-ratio 0.3s ease, max-width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
         video, canvas {
             position: absolute;
@@ -38,40 +37,39 @@
             left: 0;
             width: 100%;
             height: 100%;
-            object-fit: cover;
+            object-fit: cover; /* Menyesuaikan penuh seperti kamera bawaan HP */
         }
-        /* Efek Tampilan Cermin (Mirrored) di Layar saja */
+        /* Efek Tampilan Cermin (Mirrored) khusus di layar */
         .mirrored {
             transform: scaleX(-1);
         }
         .control-panel {
-            margin-top: 15px;
+            position: absolute;
+            bottom: 30px;
             display: flex;
-            gap: 12px;
+            gap: 15px;
             z-index: 20;
-            flex-wrap: wrap;
             justify-content: center;
             width: 100%;
-            max-width: 854px;
+            padding: 0 20px;
         }
         .btn {
-            background: rgba(255, 255, 255, 0.15);
+            background: rgba(0, 0, 0, 0.6);
             color: #fff;
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            padding: 12px 24px;
-            border-radius: 8px;
-            font-size: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            padding: 12px 20px;
+            border-radius: 30px;
+            font-size: 14px;
             font-weight: bold;
             cursor: pointer;
             transition: all 0.2s ease;
-            backdrop-filter: blur(5px);
-            flex: 1;
-            min-width: 140px;
-            max-width: 200px;
-            text-align: center;
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
         .btn:hover {
-            background: rgba(255, 255, 255, 0.3);
+            background: rgba(255, 255, 255, 0.2);
         }
         .btn.recording {
             background: #ff3b30;
@@ -83,29 +81,6 @@
             50% { opacity: 0.5; }
             100% { opacity: 1; }
         }
-
-        /* Penyesuaian Responsif Dinamis Berdasarkan Orientasi & Device */
-        @media (max-width: 768px), (orientation: portrait) {
-            body {
-                padding: 5px;
-                justify-content: center;
-            }
-            #container {
-                width: 100%;
-                max-width: 450px;
-                aspect-ratio: 9/16; /* Otomatis 9:16 pada layar portrait HP */
-                max-height: 80vh;
-            }
-            .control-panel {
-                margin-top: 12px;
-                gap: 10px;
-            }
-            .btn {
-                padding: 10px 16px;
-                font-size: 14px;
-                min-width: 120px;
-            }
-        }
     </style>
 
     <!-- Memuat Library MediaPipe Hands & Camera Utils -->
@@ -116,13 +91,13 @@
 
     <div id="container">
         <video id="webcam" autoplay playsinline muted></video>
-        <!-- Canvas diberi class mirrored agar tampil seperti cermin tanpa mengubah data aslinya -->
+        <!-- Canvas diberi class mirrored agar tampil seperti cermin -->
         <canvas id="output_canvas" class="mirrored"></canvas>
     </div>
 
     <div class="control-panel">
-        <button id="switchCameraBtn" class="btn">🔄 Balik Kamera</button>
-        <button id="recordBtn" class="btn">🔴 Mulai Rekam</button>
+        <button id="switchCameraBtn" class="btn">🔄 Kamera</button>
+        <button id="recordBtn" class="btn">🔴 Rekam</button>
     </div>
 
     <canvas id="hidden_canvas" style="display:none;"></canvas>
@@ -130,7 +105,6 @@
     <script>
         const videoElement = document.getElementById('webcam');
         const canvasElement = document.getElementById('output_canvas');
-        const containerElement = document.getElementById('container');
         const canvasCtx = canvasElement.getContext('2d', { willReadFrequently: true });
         
         const hiddenCanvas = document.getElementById('hidden_canvas');
@@ -155,8 +129,8 @@
         let lastClapToggleTime = 0;
 
         let useFrontCamera = true;
-        let activeCamera = 'user';
-        let cameraInstance = null;
+        let mediaStream = null;
+        let animationFrameId = null;
 
         let mediaRecorder = null;
         let recordedChunks = [];
@@ -193,53 +167,62 @@
             }
         });
 
-        function getOptimalResolution() {
-            const isPortrait = window.innerHeight > window.innerWidth;
-            if (isPortrait) {
-                return { width: 480, height: 854 };
-            } else {
-                return { width: 1280, height: 720 };
+        async function startCamera() {
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
             }
-        }
-
-        function startCamera() {
-            if (cameraInstance) {
-                cameraInstance.stop();
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
             }
 
-            const res = getOptimalResolution();
-            const targetWidth = res.width;
-            const targetHeight = res.height;
+            // Menggunakan constraints fleksibel agar aman dari error NotFoundError di berbagai perangkat
+            const constraints = {
+                video: {
+                    facingMode: useFrontCamera ? 'user' : 'environment',
+                    width: { ideal: window.innerWidth > window.innerHeight ? 1280 : 720 },
+                    height: { ideal: window.innerWidth > window.innerHeight ? 720 : 1280 }
+                },
+                audio: false
+            };
 
-            cameraInstance = new Camera(videoElement, {
-                onFrame: async () => {
-                    if (videoElement.readyState >= 2) {
-                        if (canvasElement.width !== targetWidth || canvasElement.height !== targetHeight) {
-                            canvasElement.width = targetWidth;
-                            canvasElement.height = targetHeight;
-                            
-                            const isPortrait = window.innerHeight > window.innerWidth;
-                            hiddenCanvas.width = isPortrait ? 120 : 320;
-                            hiddenCanvas.height = isPortrait ? 213 : 180;
-                        }
+            try {
+                try {
+                    mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+                } catch (e) {
+                    // Fallback otomatis ke kamera default jika facingMode spesifik ditolak perangkat
+                    mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                }
 
-                        if (!isRunningAI) {
-                            isRunningAI = true;
-                            await hands.send({ image: videoElement }).catch((err) => {
-                                console.error("AI send error:", err);
-                                isRunningAI = false;
-                            });
+                videoElement.srcObject = mediaStream;
+                await videoElement.play();
+
+                // Menyesuaikan ukuran resolusi canvas dengan video asli yang masuk
+                const videoTrack = mediaStream.getVideoTracks()[0];
+                const settings = videoTrack.getSettings();
+                
+                canvasElement.width = settings.width || videoElement.videoWidth || 1280;
+                canvasElement.height = settings.height || videoElement.videoHeight || 720;
+                
+                const isPortrait = window.innerHeight > window.innerWidth;
+                hiddenCanvas.width = isPortrait ? 120 : 320;
+                hiddenCanvas.height = isPortrait ? 213 : 180;
+
+                async function processVideoFrame() {
+                    if (videoElement.readyState >= 2 && !isRunningAI) {
+                        isRunningAI = true;
+                        try {
+                            await hands.send({ image: videoElement });
+                        } catch (e) {
+                            isRunningAI = false;
                         }
                     }
-                },
-                facingMode: activeCamera,
-                width: targetWidth,
-                height: targetHeight
-            });
+                    animationFrameId = requestAnimationFrame(processVideoFrame);
+                }
+                processVideoFrame();
 
-            cameraInstance.start().catch(err => {
-                alert("Gagal mengakses kamera: " + err);
-            });
+            } catch (err) {
+                alert("Gagal mengakses kamera: " + err.message);
+            }
         }
 
         window.addEventListener('resize', () => {
@@ -251,15 +234,11 @@
 
         switchCameraBtn.addEventListener('click', () => {
             useFrontCamera = !useFrontCamera;
-            activeCamera = useFrontCamera ? 'user' : 'environment';
             
-            // Mengatur mode cermin otomatis khusus kamera depan
             if (useFrontCamera) {
                 canvasElement.classList.add('mirrored');
-                videoElement.style.transform = 'scaleX(-1)';
             } else {
                 canvasElement.classList.remove('mirrored');
-                videoElement.style.transform = 'scaleX(1)';
             }
 
             startCamera();
@@ -275,8 +254,6 @@
 
         function startRecording() {
             recordedChunks = [];
-            
-            // Perbaikan kompatibilitas stream rekam dengan opsi fallback codec yang aman
             let stream;
             try {
                 stream = canvasElement.captureStream(30);
@@ -291,7 +268,7 @@
                 if (!MediaRecorder.isTypeSupported(options.mimeType)) {
                     options = { mimeType: 'video/webm' };
                     if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                        options = {}; // Gunakan format default browser
+                        options = {}; 
                     }
                 }
             }
@@ -324,10 +301,9 @@
                 }, 100);
             };
 
-            // Mulai rekam dengan interval chunk 250ms agar data terekam dengan stabil
             mediaRecorder.start(250);
             isRecording = true;
-            recordBtn.innerText = "⏹️ Stop & Simpan";
+            recordBtn.innerText = "⏹️ Stop";
             recordBtn.classList.add('recording');
         }
 
@@ -335,7 +311,7 @@
             if (mediaRecorder && isRecording) {
                 mediaRecorder.stop();
                 isRecording = false;
-                recordBtn.innerText = "🔴 Mulai Rekam";
+                recordBtn.innerText = "🔴 Rekam";
                 recordBtn.classList.remove('recording');
             }
         }
@@ -378,7 +354,6 @@
             };
 
             let distanceBetweenHands = Math.hypot(leftCenter.x - rightCenter.x, leftCenter.y - rightCenter.y);
-
             let leftWrist = {x: allLandmarks[0][0].x * canvasElement.width, y: allLandmarks[0][0].y * canvasElement.height};
             let leftMiddleBase = {x: allLandmarks[0][9].x * canvasElement.width, y: allLandmarks[0][9].y * canvasElement.height};
             let handScale = Math.hypot(leftMiddleBase.x - leftWrist.x, leftMiddleBase.y - leftWrist.y);
@@ -574,7 +549,6 @@
                 isClappingPrev = isClappingNow;
 
                 let sidePalette = [];
-
                 if (modeStateIndex === 0) {
                     sidePalette = [
                         {effect: 'zebra', color: COLORS[0]},
@@ -629,7 +603,6 @@
                             rightTips[i1]
                         ];
                         let sideStyle = sidePalette[i % sidePalette.length];
-                        
                         drawEffectPolygon(quadPoints, sideStyle.effect, sideStyle.color, w, h);
                     }
                 }
