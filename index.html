@@ -75,12 +75,7 @@
         ];
 
         let latestResults = null;
-        let isProcessing = false;
-
-        function onResults(results) {
-            latestResults = results;
-            isProcessing = false;
-        }
+        let isDetecting = false;
 
         const hands = new Hands({
             locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
@@ -88,27 +83,35 @@
 
         hands.setOptions({
             maxNumHands: 2,
-            modelComplexity: 0, // Paling ringan
-            minDetectionConfidence: 0.4,
-            minTrackingConfidence: 0.4
+            modelComplexity: 0,
+            minDetectionConfidence: 0.3,
+            minTrackingConfidence: 0.3
         });
 
-        hands.onResults(onResults);
+        hands.onResults((results) => {
+            latestResults = results;
+            isDetecting = false;
+        });
 
         const camera = new Camera(videoElement, {
             onFrame: async () => {
-                // Mencegah penumpukan antrean proses AI yang bikin freeze di HP
-                if (!isProcessing && videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
-                    isProcessing = true;
-                    await hands.send({image: videoElement});
-                }
+                // Biarkan video berjalan bebas tanpa membebani per frame
             },
-            width: 320,  // Resolusi dipangkas agar performa sangat enteng di HP
+            width: 320,
             height: 240
         });
 
         camera.start().then(() => {
             statusElement.innerText = "Kamera Aktif. Menunggu Tangan...";
+            
+            // Kirim frame ke AI secara berkala (setiap 80ms / ~12 kali sedetik) agar tidak pernah freeze
+            setInterval(async () => {
+                if (!isDetecting && videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+                    isDetecting = true;
+                    await hands.send({ image: videoElement });
+                }
+            }, 80);
+
         }).catch(err => {
             statusElement.innerText = "Gagal mengakses kamera!";
             console.error(err);
