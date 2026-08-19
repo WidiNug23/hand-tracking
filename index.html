@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Hand Tracking & Comet Trail - Worker Thread</title>
+    <title>Hand Tracking & Comet Trail</title>
     <style>
         body {
             margin: 0;
@@ -47,13 +47,16 @@
             z-index: 10;
         }
     </style>
+
+    <!-- Memuat MediaPipe Tasks Vision dari CDN Resmi -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/vision_bundle.js" crossorigin="anonymous"></script>
 </head>
 <body>
 
     <div id="container">
         <video id="webcam" autoplay playsinline muted></video>
         <canvas id="output_canvas"></canvas>
-        <div id="status">Memuat AI Worker...</div>
+        <div id="status">Memuat Model AI...</div>
     </div>
 
     <script>
@@ -61,6 +64,11 @@
         const canvasElement = document.getElementById('output_canvas');
         const canvasCtx = canvasElement.getContext('2d', { alpha: false });
         const statusElement = document.getElementById('status');
+
+        let handLandmarker = undefined;
+        let lastVideoTime = -1;
+        let latestResults = null;
+        let isDetecting = false;
 
         const FINGER_TIPS = [4, 8, 12, 16, 20];
         let trailLeft = Array.from({length: 5}, () => []);
@@ -73,64 +81,75 @@
             {r: 0, g: 255, b: 0},    // Hijau
         ];
 
-        let latestResults = null;
-        let isWorkerBusy = false;
-        let worker = null;
-
-        // Inisialisasi Web Worker
-        function initWorker() {
-            worker = new Worker('worker.js');
-            
-            worker.onmessage = (event) => {
-                const { type, results } = event.data;
-                if (type === "READY") {
-                    statusElement.innerText = "AI Siap. Membuka Kamera...";
-                    startWebcam();
-                } else if (type === "RESULTS") {
-                    latestResults = results;
-                    isWorkerBusy = false; // Bebas menerima frame baru setelah selesai
-                }
-            };
-        }
-
-        function startWebcam() {
-            navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
-                .then((stream) => {
-                    videoElement.srcObject = stream;
-                    videoElement.addEventListener("loadeddata", () => {
-                        statusElement.innerText = "Kamera Aktif. Menunggu Tangan...";
-                        requestAnimationFrame(renderLoop);
-                    });
-                })
-                .catch(err => {
-                    statusElement.innerText = "Gagal mengakses kamera!";
-                    console.error(err);
+        // 1. Inisialisasi HandLandmarker
+        async function initializeHandLandmarker() {
+            try {
+                const vision = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
+                );
+                handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                        delegate: "CPU" // Menggunakan CPU agar kompatibel penuh di semua perangkat tanpa crash
+                    },
+                    runningMode: "VIDEO",
+                    numHands: 2
                 });
+                statusElement.innerText = "Model Siap. Membuka Kamera...";
+                startWebcam();
+            } catch (error) {
+                statusElement.innerText = "Gagal memuat AI Model!";
+                console.error(error);
+            }
         }
 
-        // Loop utama halaman (berjalan mulus 60 FPS tanpa terhalang AI)
-        async function renderLoop() {
+        // 2. Menyalakan Kamera dengan Resolusi Optimal (Ringan)
+        function startWebcam() {
+            navigator.mediaDevices.getUserMedia({ 
+                video: { width: 480, height: 360 } 
+            })
+            .then((stream) => {
+                videoElement.srcObject = stream;
+                videoElement.onloadedmetadata = () => {
+                    statusElement.innerText = "Kamera Aktif. Menunggu Tangan...";
+                    requestAnimationFrame(renderLoop);
+                };
+            })
+            .catch(err => {
+                statusElement.innerText = "Gagal mengakses kamera! Izinkan izin kamera.";
+                console.error(err);
+            });
+        }
+
+        // 3. Loop Rendering & Deteksi yang Aman
+        function renderLoop() {
             if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
-                canvasElement.width = videoElement.videoWidth || 640;
-                canvasElement.height = videoElement.videoHeight || 480;
+                canvasElement.width = videoElement.videoWidth || 480;
+                canvasElement.height = videoElement.videoHeight || 360;
             }
 
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+            
+            if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+                canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
 
-            // Kirim frame ke Web Worker jika worker sedang tidak sibuk
-            if (worker && !isWorkerBusy && videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
-                isWorkerBusy = true;
-                try {
-                    const imageBitmap = await createImageBitmap(videoElement);
-                    worker.postMessage({ imageBitmap, timestamp: performance.now() }, [imageBitmap]);
-                } catch (e) {
-                    isWorkerBusy = false;
+                // Kirim ke AI secara asinkron tanpa nge-block frame video
+                if (handLandmarker && videoElement.currentTime !== lastVideoTime && !isDetecting) {
+                    lastVideoTime = videoElement.currentTime;
+                    isDetecting = true;
+                    
+                    try {
+                        let startTimeMs = performance.now();
+                        latestResults = handLandmarker.detectForVideo(videoElement, startTimeMs);
+                    } catch (e) {
+                        console.error(e);
+                    }
+                    isDetecting = false;
                 }
             }
 
-            // Render hasil deteksi tangan dari Worker
+            // Render Hasil Deteksi Tangan & Komet
             let results = latestResults;
             let numHands = (results && results.landmarks) ? results.landmarks.length : 0;
             let smoothLeft = {};
@@ -227,8 +246,8 @@
             requestAnimationFrame(renderLoop);
         }
 
-        // Mulai jalankan worker
-        initWorker();
+        // Jalankan inisialisasi
+        initializeHandLandmarker();
     </script>
 </body>
 </html>
