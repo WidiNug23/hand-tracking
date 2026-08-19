@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hand Geometry & Comet Trail Web</title>
+    <title>Hand Geometry & Comet Trail Web (Optimized)</title>
     <style>
         body {
             margin: 0;
@@ -71,14 +71,7 @@
         const FINGER_TIPS = [4, 8, 12, 16, 20];
         let trailHistoryLeft = {0: [], 1: [], 2: [], 3: [], 4: []};
         let trailHistoryRight = {0: [], 1: [], 2: [], 3: [], 4: []};
-
-        const COLORS = [
-            'rgb(0, 0, 255)',    // Merah (Format RGB untuk canvas)
-            'rgb(255, 0, 0)',    // Biru
-            'rgb(0, 255, 255)',  // Kuning
-            'rgb(0, 255, 0)',    // Hijau
-            'rgb(255, 0, 255)'   // Magenta
-        ];
+        let isProcessing = false; // Pengaman agar tidak freeze/menumpuk antrean frame
 
         function onResults(results) {
             canvasElement.width = videoElement.videoWidth || 640;
@@ -98,7 +91,6 @@
                 numHands = results.multiHandLandmarks.length;
                 for (let i = 0; i < numHands; i++) {
                     const classification = results.multiHandedness[i].classification[0].label;
-                    // MediaPipe mendeteksi secara mirror, sesuaikan label
                     const handLabel = classification === 'Left' ? 'Right' : 'Left';
                     const landmarks = results.multiHandLandmarks[i];
 
@@ -108,15 +100,14 @@
                         const y = landmarks[tipIdx].y * canvasElement.height;
                         tipDict[idx] = {x, y};
 
-                        // Update riwayat komet
                         if (handLabel === 'Left') {
                             if (!trailHistoryLeft[idx]) trailHistoryLeft[idx] = [];
                             trailHistoryLeft[idx].unshift({x, y});
-                            if (trailHistoryLeft[idx].length > 12) trailHistoryLeft[idx].pop();
+                            if (trailHistoryLeft[idx].length > 10) trailHistoryLeft[idx].pop();
                         } else {
                             if (!trailHistoryRight[idx]) trailHistoryRight[idx] = [];
                             trailHistoryRight[idx].unshift({x, y});
-                            if (trailHistoryRight[idx].length > 12) trailHistoryRight[idx].pop();
+                            if (trailHistoryRight[idx].length > 10) trailHistoryRight[idx].pop();
                         }
                     });
 
@@ -127,8 +118,8 @@
 
             // --- Skenario Dua Tangan (4 Sisi Berbeda Warna) ---
             if (landmarksLeft && landmarksRight) {
-                statusElement.innerText = "Dua Tangan Aktif (4 Sisi Berbeda)";
-                let availableIndices = [0, 1, 2, 3, 4]; // Cukup ambil 5 ujung jari
+                statusElement.innerText = "Dua Tangan Aktif (4 Sisi)";
+                let availableIndices = [0, 1, 2, 3, 4];
 
                 const sideColors = [
                     'rgba(255, 0, 0, 0.4)',     // Merah
@@ -174,7 +165,7 @@
                 canvasCtx.lineWidth = 1.5;
                 canvasCtx.stroke();
             } else {
-                statusElement.innerText = "Arahkan tangan ke kamera HP...";
+                statusElement.innerText = "Arahkan tangan ke kamera...";
             }
 
             // Gambar Ekor Komet dengan Efek Fade
@@ -190,7 +181,7 @@
                 for (let i = 0; i < pts.length - 1; i++) {
                     let progress = i / pts.length;
                     let alpha = 0.8 * (1.0 - progress);
-                    let thickness = Math.max(1, 5 * (1.0 - progress));
+                    let thickness = Math.max(1, 4 * (1.0 - progress));
 
                     canvasCtx.beginPath();
                     canvasCtx.moveTo(pts[i].x, pts[i].y);
@@ -209,16 +200,25 @@
 
         hands.setOptions({
             maxNumHands: 2,
-            modelComplexity: 1,
+            modelComplexity: 0, // Diturunkan ke 0 (Lite) agar ringan dan tidak freeze di HP
             minDetectionConfidence: 0.5,
             minTrackingConfidence: 0.5
         });
 
-        hands.onResults(onResults);
+        hands.onResults((results) => {
+            onResults(results);
+            isProcessing = false; // Buka kunci setelah selesai memproses satu frame
+        });
 
         const camera = new Camera(videoElement, {
             onFrame: async () => {
-                await hands.send({image: videoElement});
+                if (isProcessing) return; // Lewati frame jika proses sebelumnya belum selesai
+                isProcessing = true;
+                try {
+                    await hands.send({image: videoElement});
+                } catch (err) {
+                    isProcessing = false;
+                }
             },
             width: 640,
             height: 480
