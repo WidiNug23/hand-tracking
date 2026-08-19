@@ -95,10 +95,10 @@
         <canvas id="output_canvas" class="mirrored"></canvas>
     </div>
 
-    <div class="control-panel">
+    <!-- <div class="control-panel">
         <button id="switchCameraBtn" class="btn">🔄 Kamera</button>
         <button id="recordBtn" class="btn">🔴 Rekam</button>
-    </div>
+    </div> -->
 
     <canvas id="hidden_canvas" style="display:none;"></canvas>
 
@@ -110,8 +110,8 @@
         const hiddenCanvas = document.getElementById('hidden_canvas');
         const hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
 
-        const switchCameraBtn = document.getElementById('switchCameraBtn');
-        const recordBtn = document.getElementById('recordBtn');
+        // const switchCameraBtn = document.getElementById('switchCameraBtn');
+        // const recordBtn = document.getElementById('recordBtn');
 
         const FINGER_TIPS = [4, 8, 12, 16, 20];
         const FINGER_BASES = [2, 5, 9, 13, 17];  
@@ -232,25 +232,25 @@
             }, 300);
         });
 
-        switchCameraBtn.addEventListener('click', () => {
-            useFrontCamera = !useFrontCamera;
+        // switchCameraBtn.addEventListener('click', () => {
+        //     useFrontCamera = !useFrontCamera;
             
-            if (useFrontCamera) {
-                canvasElement.classList.add('mirrored');
-            } else {
-                canvasElement.classList.remove('mirrored');
-            }
+        //     if (useFrontCamera) {
+        //         canvasElement.classList.add('mirrored');
+        //     } else {
+        //         canvasElement.classList.remove('mirrored');
+        //     }
 
-            startCamera();
-        });
+        //     startCamera();
+        // });
 
-        recordBtn.addEventListener('click', () => {
-            if (!isRecording) {
-                startRecording();
-            } else {
-                stopRecording();
-            }
-        });
+        // recordBtn.addEventListener('click', () => {
+        //     if (!isRecording) {
+        //         startRecording();
+        //     } else {
+        //         stopRecording();
+        //     }
+        // });
 
         function startRecording() {
             recordedChunks = [];
