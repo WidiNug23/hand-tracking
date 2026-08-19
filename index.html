@@ -24,12 +24,13 @@
         #container {
             position: relative;
             width: 100%;
-            max-width: 854px;
+            max-width: 1280px;
             aspect-ratio: 16/9;
             background: #111;
             border-radius: 12px;
             overflow: hidden;
             box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            transition: aspect-ratio 0.3s ease, max-width 0.3s ease;
         }
         video, canvas {
             position: absolute;
@@ -38,9 +39,6 @@
             width: 100%;
             height: 100%;
             object-fit: cover;
-        }
-        .mirrored {
-            transform: scaleX(-1);
         }
         .control-panel {
             margin-top: 15px;
@@ -82,20 +80,20 @@
             100% { opacity: 1; }
         }
 
-        /* Penyesuaian Responsif untuk Tampilan Layar HP / Mobile */
-        @media (max-width: 768px) {
+        /* Penyesuaian Responsif Dinamis Berdasarkan Orientasi & Device */
+        @media (max-width: 768px), (orientation: portrait) {
             body {
                 padding: 5px;
-                justify-content: flex-start;
-                padding-top: 20px;
+                justify-content: center;
             }
             #container {
                 width: 100%;
-                aspect-ratio: 9/16; /* Menyesuaikan layar portrait HP agar lebih natural */
-                max-height: 70vh;
+                max-width: 450px;
+                aspect-ratio: 9/16; /* Otomatis 9:16 pada layar portrait HP */
+                max-height: 80vh;
             }
             .control-panel {
-                margin-top: 15px;
+                margin-top: 12px;
                 gap: 10px;
             }
             .btn {
@@ -114,7 +112,7 @@
 
     <div id="container">
         <video id="webcam" autoplay playsinline muted></video>
-        <canvas id="output_canvas" class="mirrored"></canvas>
+        <canvas id="output_canvas"></canvas>
     </div>
 
     <div class="control-panel">
@@ -127,6 +125,7 @@
     <script>
         const videoElement = document.getElementById('webcam');
         const canvasElement = document.getElementById('output_canvas');
+        const containerElement = document.getElementById('container');
         const canvasCtx = canvasElement.getContext('2d', { willReadFrequently: true });
         
         const hiddenCanvas = document.getElementById('hidden_canvas');
@@ -189,15 +188,25 @@
             }
         });
 
+        function getOptimalResolution() {
+            const isPortrait = window.innerHeight > window.innerWidth;
+            if (isPortrait) {
+                // Resolusi optimal Portrait (9:16) berbobot ringan untuk HP
+                return { width: 480, height: 854 };
+            } else {
+                // Resolusi optimal Landscape (16:9)
+                return { width: 1280, height: 720 };
+            }
+        }
+
         function startCamera() {
             if (cameraInstance) {
                 cameraInstance.stop();
             }
 
-            // Deteksi perangkat: Jika di HP (layar kecil), gunakan resolusi 640x360 agar sangat ringan dan bebas lag
-            const isMobile = window.innerWidth <= 768;
-            const targetWidth = isMobile ? 640 : 1280;
-            const targetHeight = isMobile ? 360 : 720;
+            const res = getOptimalResolution();
+            const targetWidth = res.width;
+            const targetHeight = res.height;
 
             cameraInstance = new Camera(videoElement, {
                 onFrame: async () => {
@@ -205,9 +214,11 @@
                         if (canvasElement.width !== targetWidth || canvasElement.height !== targetHeight) {
                             canvasElement.width = targetWidth;
                             canvasElement.height = targetHeight;
-                            // Hidden canvas diperkecil agar operasi pixel manipulation berjalan instan tanpa lag
-                            hiddenCanvas.width = isMobile ? 213 : 426;
-                            hiddenCanvas.height = isMobile ? 120 : 240;
+                            
+                            // Hidden canvas diperkecil agar pemrosesan piksel instan dan bebas lag
+                            const isPortrait = window.innerHeight > window.innerWidth;
+                            hiddenCanvas.width = isPortrait ? 120 : 320;
+                            hiddenCanvas.height = isPortrait ? 213 : 180;
                         }
 
                         if (!isRunningAI) {
@@ -229,17 +240,21 @@
             });
         }
 
+        // Handle perubahan orientasi layar secara real-time
+        window.addEventListener('resize', () => {
+            clearTimeout(window.resizeTimer);
+            window.resizeTimer = setTimeout(() => {
+                startCamera();
+            }, 300);
+        });
+
         switchCameraBtn.addEventListener('click', () => {
             useFrontCamera = !useFrontCamera;
             activeCamera = useFrontCamera ? 'user' : 'environment';
             
-            if (useFrontCamera) {
-                canvasElement.classList.add('mirrored');
-                videoElement.style.transform = 'scaleX(-1)';
-            } else {
-                canvasElement.classList.remove('mirrored');
-                videoElement.style.transform = 'scaleX(1)';
-            }
+            // Tanpa efek mirror (dinonaktifkan sepenuhnya)
+            canvasElement.style.transform = 'none';
+            videoElement.style.transform = 'none';
 
             startCamera();
         });
@@ -370,15 +385,7 @@
             let hh = hiddenCanvas.height;
 
             hiddenCtx.clearRect(0, 0, hw, hh);
-            
-            hiddenCtx.save();
-            if (useFrontCamera) {
-                hiddenCtx.scale(-1, 1);
-                hiddenCtx.drawImage(videoElement, -hw, 0, hw, hh);
-            } else {
-                hiddenCtx.drawImage(videoElement, 0, 0, hw, hh);
-            }
-            hiddenCtx.restore();
+            hiddenCtx.drawImage(videoElement, 0, 0, hw, hh);
 
             let imgData = hiddenCtx.getImageData(0, 0, hw, hh);
             let data = imgData.data;
@@ -477,14 +484,7 @@
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             
             if (results.image) {
-                canvasCtx.save();
-                if (useFrontCamera) {
-                    canvasCtx.scale(-1, 1);
-                    canvasCtx.drawImage(results.image, -canvasElement.width, 0, canvasElement.width, canvasElement.height);
-                } else {
-                    canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-                }
-                canvasCtx.restore();
+                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
             }
 
             let w = canvasElement.width;
@@ -506,8 +506,6 @@
 
                     FINGER_TIPS.forEach((tipIdx, idx) => {
                         let rawX = landmarks[tipIdx].x;
-                        if (useFrontCamera) rawX = 1.0 - rawX;
-
                         const x = rawX * w;
                         const y = landmarks[tipIdx].y * h;
                         tipDict[idx] = {x, y};
