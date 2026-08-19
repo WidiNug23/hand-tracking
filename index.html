@@ -60,7 +60,7 @@
     <script>
         const videoElement = document.getElementById('webcam');
         const canvasElement = document.getElementById('output_canvas');
-        const canvasCtx = canvasElement.getContext('2d', { alpha: false }); // Optimasi performa canvas
+        const canvasCtx = canvasElement.getContext('2d', { alpha: false });
         const statusElement = document.getElementById('status');
 
         const FINGER_TIPS = [4, 8, 12, 16, 20];
@@ -75,9 +75,11 @@
         ];
 
         let latestResults = null;
+        let isProcessing = false;
 
         function onResults(results) {
             latestResults = results;
+            isProcessing = false;
         }
 
         const hands = new Hands({
@@ -86,19 +88,23 @@
 
         hands.setOptions({
             maxNumHands: 2,
-            modelComplexity: 0, // Diturunkan ke 0 agar jauh lebih ringan & tidak freeze di HP
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
+            modelComplexity: 0, // Paling ringan
+            minDetectionConfidence: 0.4,
+            minTrackingConfidence: 0.4
         });
 
         hands.onResults(onResults);
 
         const camera = new Camera(videoElement, {
             onFrame: async () => {
-                await hands.send({image: videoElement});
+                // Mencegah penumpukan antrean proses AI yang bikin freeze di HP
+                if (!isProcessing && videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+                    isProcessing = true;
+                    await hands.send({image: videoElement});
+                }
             },
-            width: 480,  // Diturunkan resolusinya agar performa mulus
-            height: 360
+            width: 320,  // Resolusi dipangkas agar performa sangat enteng di HP
+            height: 240
         });
 
         camera.start().then(() => {
@@ -108,11 +114,10 @@
             console.error(err);
         });
 
-        // Loop rendering terpisah menggunakan requestAnimationFrame agar video tetap halus
         function renderLoop() {
             if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
-                canvasElement.width = videoElement.videoWidth || 480;
-                canvasElement.height = videoElement.videoHeight || 360;
+                canvasElement.width = videoElement.videoWidth || 320;
+                canvasElement.height = videoElement.videoHeight || 240;
             }
 
             canvasCtx.save();
@@ -142,10 +147,10 @@
 
                         if (actualHand === "Left") {
                             trailLeft[i].unshift({x, y});
-                            if (trailLeft[i].length > 10) trailLeft[i].pop();
+                            if (trailLeft[i].length > 8) trailLeft[i].pop();
                         } else {
                             trailRight[i].unshift({x, y});
-                            if (trailRight[i].length > 10) trailRight[i].pop();
+                            if (trailRight[i].length > 8) trailRight[i].pop();
                         }
                     });
 
