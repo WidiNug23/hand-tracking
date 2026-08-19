@@ -145,21 +145,16 @@
             .then(() => { statusElement.innerText = "Arahkan tangan ke kamera..."; })
             .catch(err => { statusElement.innerText = "Gagal akses kamera: " + err; });
 
-        // Deteksi kepalan tangan adaptif menggunakan rasio jarak telapak tangan (landmark 0 ke 9)
+        // Deteksi kepalan tangan disesuaikan dengan logika Python (jarak rata-rata ujung jari ke pergelangan)
         function checkIsFisted(landmarks, w, h) {
             let wrist = {x: landmarks[0].x * w, y: landmarks[0].y * h};
-            let indexMCP = {x: landmarks[9].x * w, y: landmarks[9].y * h};
-            let palmScale = Math.hypot(indexMCP.x - wrist.x, indexMCP.y - wrist.y);
-
             let distances = [];
             FINGER_TIPS.forEach(tipIdx => {
                 let tip = {x: landmarks[tipIdx].x * w, y: landmarks[tipIdx].y * h};
                 distances.push(Math.hypot(tip.x - wrist.x, tip.y - wrist.y));
             });
             let avgDist = distances.reduce((a, b) => a + b, 0) / distances.length;
-            
-            // Jika jarak ujung jari ke pergelangan dekat relatif terhadap ukuran telapak
-            return (avgDist / palmScale) < 1.35;
+            return avgDist < 100.0;
         }
 
         function applyMotionWave(pts, velocity, timeVal) {
@@ -173,33 +168,18 @@
             });
         }
 
-        // Fungsi menerapkan efek visual (Mono, Negative, Sepia, Bright) pada area Polygon
+        // Fungsi menerapkan efek visual pada area Polygon
         function drawEffectPolygon(wavyPts, effectType, tintColor) {
+            if (!wavyPts || wavyPts.length < 3) return;
+
+            // Ambil frame terbaru ke hiddenCanvas
             hiddenCtx.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
             hiddenCtx.drawImage(videoElement, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
-
             let imgData = hiddenCtx.getImageData(0, 0, hiddenCanvas.width, hiddenCanvas.height);
             let data = imgData.data;
 
-            // Buat path clipping untuk area polygon tangan
-            canvasCtx.save();
-            canvasCtx.beginPath();
-            wavyPts.forEach((pt, idx) => {
-                if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
-                else canvasCtx.lineTo(pt.x, pt.y);
-            });
-            canvasCtx.closePath();
-            canvasCtx.clip();
-
-            // Render ulang video dasar di dalam kliping
-            canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
-
-            // Ambil data piksel area canvas utama
-            let mainImgData = canvasCtx.getImageData(0, 0, canvasElement.width, canvasElement.height);
-            let d = mainImgData.data;
-
-            for (let i = 0; i < d.length; i += 4) {
-                let r = d[i], g = d[i+1], b = d[i+2];
+            for (let i = 0; i < data.length; i += 4) {
+                let r = data[i], g = data[i+1], b = data[i+2];
 
                 if (effectType === 'mono') {
                     let gray = 0.299 * r + 0.587 * g + 0.114 * b;
@@ -217,17 +197,29 @@
                     b = Math.min(255, b * 1.3 + 25);
                 }
 
-                // Tambahkan tint color transparan
-                d[i] = r * 0.75 + tintColor.r * 0.25;
-                d[i+1] = g * 0.75 + tintColor.g * 0.25;
-                d[i+2] = b * 0.75 + tintColor.b * 0.25;
+                // Tint color transparan
+                data[i]   = r * 0.75 + tintColor.r * 0.25;
+                data[i+1] = g * 0.75 + tintColor.g * 0.25;
+                data[i+2] = b * 0.75 + tintColor.b * 0.25;
             }
 
-            canvasCtx.putImageData(mainImgData, 0, 0);
-            
+            hiddenCtx.putImageData(imgData, 0, 0);
+
+            // Gambar kliping polygon ke canvas utama
+            canvasCtx.save();
+            canvasCtx.beginPath();
+            wavyPts.forEach((pt, idx) => {
+                if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
+                else canvasCtx.lineTo(pt.x, pt.y);
+            });
+            canvasCtx.closePath();
+            canvasCtx.clip();
+
+            canvasCtx.drawImage(hiddenCanvas, 0, 0);
+
             // Garis pinggir polygon putih
             canvasCtx.strokeStyle = '#FFFFFF';
-            canvasCtx.lineWidth = 1.5;
+            canvasCtx.lineWidth = 1;
             canvasCtx.stroke();
             canvasCtx.restore();
         }
@@ -283,13 +275,13 @@
 
             // Hitung kecepatan tangan untuk gelombang
             let centers = [];
-            if (leftTips) centers.push(Object.values(leftTips).reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x:0, y:0}));
-            if (rightTips) centers.push(Object.values(rightTips).reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x:0, y:0}));
+            if (leftTips) centers.push(Object.values(leftTips).reduce((acc, p) => ({x: acc.x + p.x/5, y: acc.y + p.y/5}), {x:0, y:0}));
+            if (rightTips) centers.push(Object.values(rightTips).reduce((acc, p) => ({x: acc.x + p.x/5, y: acc.y + p.y/5}), {x:0, y:0}));
 
             if (centers.length > 0) {
                 let currAvg = {
-                    x: centers.reduce((sum, c) => sum + c.x / 5, 0) / centers.length,
-                    y: centers.reduce((sum, c) => sum + c.y / 5, 0) / centers.length
+                    x: centers.reduce((sum, c) => sum + c.x, 0) / centers.length,
+                    y: centers.reduce((sum, c) => sum + c.y, 0) / centers.length
                 };
                 if (prevAvgCenter) {
                     handVelocity = Math.hypot(currAvg.x - prevAvgCenter.x, currAvg.y - prevAvgCenter.y);
@@ -332,7 +324,7 @@
 
                 for (let i = 0; i < 4; i++) {
                     let i1 = i, i2 = i + 1;
-                    if (leftTips[i1] && leftTips[i2] && rightTips[i1] && rightTips[i2]) {
+                    if (leftTips && leftTips[i1] && leftTips[i2] && rightTips && rightTips[i1] && rightTips[i2]) {
                         let quadRaw = [
                             leftTips[i1], 
                             leftTips[i2], 
