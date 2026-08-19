@@ -74,14 +74,16 @@
         let isRunningAI = false;
 
         const hands = new Hands({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+            locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }
         });
 
         hands.setOptions({
             maxNumHands: 2,
-            modelComplexity: 0,
-            minDetectionConfidence: 0.4,
-            minTrackingConfidence: 0.4
+            modelComplexity: 1, // Ditingkatkan ke 1 agar deteksi lebih stabil
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
         });
 
         hands.onResults(results => {
@@ -103,7 +105,8 @@
 
                     if (!isRunningAI) {
                         isRunningAI = true;
-                        await hands.send({ image: videoElement }).catch(() => {
+                        await hands.send({ image: videoElement }).catch((err) => {
+                            console.error("AI send error:", err);
                             isRunningAI = false;
                         });
                     }
