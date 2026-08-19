@@ -32,7 +32,7 @@
             width: 100%;
             height: 100%;
             object-fit: cover;
-            transform: scaleX(-1); /* Efek cermin (mirror) */
+            transform: scaleX(-1);
         }
         #status {
             position: absolute;
@@ -46,14 +46,13 @@
         }
     </style>
 
-    <!-- Memuat MediaPipe Hands dan Camera Utils dari CDN -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 </head>
 <body>
 
     <div id="container">
-        <video id="webcam" playsinline></video>
+        <video id="webcam" playsinline muted></video>
         <canvas id="output_canvas"></canvas>
         <div id="status">Memuat Kamera & AI...</div>
     </div>
@@ -61,7 +60,7 @@
     <script>
         const videoElement = document.getElementById('webcam');
         const canvasElement = document.getElementById('output_canvas');
-        const canvasCtx = canvasElement.getContext('2d');
+        const canvasCtx = canvasElement.getContext('2d', { alpha: false }); // Optimasi performa canvas
         const statusElement = document.getElementById('status');
 
         const FINGER_TIPS = [4, 8, 12, 16, 20];
@@ -75,20 +74,56 @@
             {r: 0, g: 255, b: 0},    // Hijau
         ];
 
+        let latestResults = null;
+
         function onResults(results) {
-            // Sesuaikan ukuran canvas dengan video
+            latestResults = results;
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 0, // Diturunkan ke 0 agar jauh lebih ringan & tidak freeze di HP
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 480,  // Diturunkan resolusinya agar performa mulus
+            height: 360
+        });
+
+        camera.start().then(() => {
+            statusElement.innerText = "Kamera Aktif. Menunggu Tangan...";
+        }).catch(err => {
+            statusElement.innerText = "Gagal mengakses kamera!";
+            console.error(err);
+        });
+
+        // Loop rendering terpisah menggunakan requestAnimationFrame agar video tetap halus
+        function renderLoop() {
             if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
-                canvasElement.width = videoElement.videoWidth || 640;
-                canvasElement.height = videoElement.videoHeight || 480;
+                canvasElement.width = videoElement.videoWidth || 480;
+                canvasElement.height = videoElement.videoHeight || 360;
             }
 
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             
-            // Gambar frame video asli
-            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+            if (videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+                canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+            }
 
-            let numHands = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+            let results = latestResults;
+            let numHands = (results && results.multiHandLandmarks) ? results.multiHandLandmarks.length : 0;
             let smoothLeft = {};
             let smoothRight = {};
 
@@ -97,7 +132,6 @@
                 
                 results.multiHandLandmarks.forEach((landmarks, index) => {
                     let handedness = results.multiHandedness[index].classification[0].label;
-                    // Karena video dicermin, label tangan dibalik
                     let actualHand = handedness === "Left" ? "Right" : "Left";
 
                     let fingertipDict = {};
@@ -108,10 +142,10 @@
 
                         if (actualHand === "Left") {
                             trailLeft[i].unshift({x, y});
-                            if (trailLeft[i].length > 12) trailLeft[i].pop();
+                            if (trailLeft[i].length > 10) trailLeft[i].pop();
                         } else {
                             trailRight[i].unshift({x, y});
-                            if (trailRight[i].length > 12) trailRight[i].pop();
+                            if (trailRight[i].length > 10) trailRight[i].pop();
                         }
                     });
 
@@ -126,7 +160,6 @@
                 }
             }
 
-            // Render Skenario Dua Tangan (4 Sisi Poligon)
             let tipColors = {};
             if (Object.keys(smoothLeft).length > 0 && Object.keys(smoothRight).length > 0) {
                 let sidePalette = [COLORS[0], COLORS[1], COLORS[2], COLORS[3]];
@@ -158,7 +191,6 @@
                 }
             }
 
-            // Fungsi Menggambar Ekor Komet (Fade ke Ujung)
             function drawTrails(trailArray) {
                 trailArray.forEach((history, tipIdx) => {
                     if (history.length < 2) return;
@@ -167,7 +199,7 @@
                     for (let i = 0; i < history.length - 1; i++) {
                         let progress = i / history.length;
                         let alpha = 0.8 * (1.0 - progress);
-                        let thickness = Math.max(1, 5 * (1.0 - progress));
+                        let thickness = Math.max(1, 4 * (1.0 - progress));
 
                         canvasCtx.beginPath();
                         canvasCtx.moveTo(history[i].x, history[i].y);
@@ -183,33 +215,10 @@
             drawTrails(trailRight);
 
             canvasCtx.restore();
+            requestAnimationFrame(renderLoop);
         }
 
-        const hands = new Hands({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-        });
-
-        hands.setOptions({
-            maxNumHands: 2,
-            modelComplexity: 1,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
-        });
-
-        hands.onResults(onResults);
-
-        const camera = new Camera(videoElement, {
-            onFrame: async () => {
-                await hands.send({image: videoElement});
-            },
-            width: 640,
-            height: 480
-        });
-
-        camera.start().catch(err => {
-            statusElement.innerText = "Gagal mengakses kamera! Izinkan akses kamera.";
-            console.error(err);
-        });
+        requestAnimationFrame(renderLoop);
     </script>
 </body>
 </html>
