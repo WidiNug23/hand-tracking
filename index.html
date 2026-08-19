@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hand Geometry & Straight Polygon (Mosaic & Random Styles)</title>
+    <title>Hand Geometry & Video Recorder / Camera Switcher</title>
     <style>
         body {
             margin: 0;
@@ -35,17 +35,43 @@
             width: 100%;
             height: 100%;
             object-fit: cover;
+        }
+        /* Style untuk mirror kamera depan secara default */
+        .mirrored {
             transform: scaleX(-1);
         }
-        #status {
-            position: absolute;
-            top: 15px;
-            left: 15px;
-            background: rgba(0, 0, 0, 0.7);
-            padding: 8px 12px;
-            border-radius: 6px;
+        
+        /* Panel Tombol Kontrol di bawah container */
+        .control-panel {
+            margin-top: 15px;
+            display: flex;
+            gap: 15px;
+            z-index: 20;
+        }
+        .btn {
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            padding: 10px 20px;
+            border-radius: 8px;
             font-size: 14px;
-            z-index: 10;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            backdrop-filter: blur(5px);
+        }
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+        .btn.recording {
+            background: #ff3b30;
+            border-color: #ff3b30;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
         }
     </style>
 
@@ -56,9 +82,14 @@
 <body>
 
     <div id="container">
-        <div id="status">Memuat Kamera & AI...</div>
         <video id="webcam" autoplay playsinline muted></video>
-        <canvas id="output_canvas"></canvas>
+        <canvas id="output_canvas" class="mirrored"></canvas>
+    </div>
+
+    <!-- Panel Tombol Tambahan -->
+    <div class="control-panel">
+        <button id="switchCameraBtn" class="btn">🔄 Balik Kamera</button>
+        <button id="recordBtn" class="btn">🔴 Mulai Rekam</button>
     </div>
 
     <!-- Hidden Canvas untuk pemrosesan filter gambar -->
@@ -72,7 +103,8 @@
         const hiddenCanvas = document.getElementById('hidden_canvas');
         const hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
 
-        const statusElement = document.getElementById('status');
+        const switchCameraBtn = document.getElementById('switchCameraBtn');
+        const recordBtn = document.getElementById('recordBtn');
 
         const FINGER_TIPS = [4, 8, 12, 16, 20]; // [Jempol, Telunjuk, Tengah, Manis, Kelingking]
         const FINGER_BASES = [2, 5, 9, 13, 17];  
@@ -84,12 +116,19 @@
         let colorIndex = 0;
         let effectIndex = 0;
         let isFistedPrev = false;
-        let prevAvgCenter = null;
 
-        // State untuk 5 mode toggle 2 tangan (0: Khusus, 1: 4 Warna, 2: Cyber Neon, 3: Mozaik, 4: Random Gabungan)
         let modeStateIndex = 0;
         let isClappingPrev = false;
         let lastClapToggleTime = 0;
+
+        let useFrontCamera = true;
+        let activeCamera = 'user'; // 'user' atau 'environment'
+        let cameraInstance = null;
+
+        // Variabel untuk Perekaman Video Canvas
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let isRecording = false;
 
         const COLORS = [
             {r: 0, g: 0, b: 255, name: "Merah", hex: "#0000FF"},
@@ -100,7 +139,7 @@
             {r: 255, g: 128, b: 0, name: "Oranye", hex: "#FF8000"}
         ];
 
-        const EFFECT_MODES = ['normal', 'mono', 'negative', 'sepia', 'bright', 'thermal', 'heat', 'zebra', 'mosaic', 'cyber'];
+        const EFFECT_MODES = ['normal', 'mono', 'negative', 'sepia', 'bright', 'thermal', 'heat', 'zebra', 'mosaic', 'cyber', 'glow'];
 
         const hands = new Hands({
             locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
@@ -122,32 +161,118 @@
             }
         });
 
-        const camera = new Camera(videoElement, {
-            onFrame: async () => {
-                if (videoElement.readyState >= 2) {
-                    if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
-                        canvasElement.width = videoElement.videoWidth || 1280;
-                        canvasElement.height = videoElement.videoHeight || 720;
-                        hiddenCanvas.width = canvasElement.width;
-                        hiddenCanvas.height = canvasElement.height;
-                    }
+        function startCamera() {
+            if (cameraInstance) {
+                cameraInstance.stop();
+            }
 
-                    if (!isRunningAI) {
-                        isRunningAI = true;
-                        await hands.send({ image: videoElement }).catch((err) => {
-                            console.error("AI send error:", err);
-                            isRunningAI = false;
-                        });
+            cameraInstance = new Camera(videoElement, {
+                onFrame: async () => {
+                    if (videoElement.readyState >= 2) {
+                        if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
+                            canvasElement.width = videoElement.videoWidth || 1280;
+                            canvasElement.height = videoElement.videoHeight || 720;
+                            hiddenCanvas.width = Math.floor((videoElement.videoWidth || 1280) / 2);
+                            hiddenCanvas.height = Math.floor((videoElement.videoHeight || 720) / 2);
+                        }
+
+                        if (!isRunningAI) {
+                            isRunningAI = true;
+                            await hands.send({ image: videoElement }).catch((err) => {
+                                console.error("AI send error:", err);
+                                isRunningAI = false;
+                            });
+                        }
                     }
-                }
-            },
-            width: 1280,
-            height: 720
+                },
+                facingMode: activeCamera,
+                width: 1280,
+                height: 720
+            });
+
+            cameraInstance.start().catch(err => {
+                alert("Gagal mengakses kamera: " + err);
+            });
+        }
+
+        // Event Tombol Balik Kamera
+        switchCameraBtn.addEventListener('click', () => {
+            useFrontCamera = !useFrontCamera;
+            activeCamera = useFrontCamera ? 'user' : 'environment';
+            
+            // Jika kamera depan, aktifkan efek mirror CSS. Jika belakang, matikan mirror.
+            if (useFrontCamera) {
+                canvasElement.classList.add('mirrored');
+                videoElement.style.transform = 'scaleX(-1)';
+            } else {
+                canvasElement.classList.remove('mirrored');
+                videoElement.style.transform = 'scaleX(1)';
+            }
+
+            startCamera();
         });
 
-        camera.start()
-            .then(() => { statusElement.innerText = "Arahkan tangan ke kamera..."; })
-            .catch(err => { statusElement.innerText = "Gagal akses kamera: " + err; });
+        // Event Tombol Rekam & Download Video
+        recordBtn.addEventListener('click', () => {
+            if (!isRecording) {
+                startRecording();
+            } else {
+                stopRecording();
+            }
+        });
+
+        function startRecording() {
+            recordedChunks = [];
+            const stream = canvasElement.captureStream(30); // 30 FPS dari hasil render canvas
+            
+            try {
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+            } catch (e) {
+                try {
+                    mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+                } catch (err) {
+                    alert('Browser Anda tidak mendukung perekaman video canvas.');
+                    return;
+                }
+            }
+
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data && event.data.size > 0) {
+                    recordedChunks.push(event.data);
+                }
+            };
+
+            mediaRecorder.onstop = () => {
+                const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                a.download = `HandEffect-Recording-${Date.now()}.webm`;
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                }, 100);
+            };
+
+            mediaRecorder.start();
+            isRecording = true;
+            recordBtn.innerText = "⏹️ Stop & Simpan";
+            recordBtn.classList.add('recording');
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                isRecording = false;
+                recordBtn.innerText = "🔴 Mulai Rekam";
+                recordBtn.classList.remove('recording');
+            }
+        }
+
+        startCamera();
 
         function checkIsFisted(landmarks, w, h) {
             let wrist = {x: landmarks[0].x * w, y: landmarks[0].y * h};
@@ -193,7 +318,6 @@
             return distanceBetweenHands < (handScale * 1.0);
         }
 
-        // Menggambar poligon lurus tanpa gelombang
         function drawStraightPolygon(pts) {
             if (!pts || pts.length < 3) return;
             canvasCtx.beginPath();
@@ -204,21 +328,34 @@
             canvasCtx.closePath();
         }
 
-        function drawEffectPolygon(pts, effectType, tintColor, w, h) {
+        function drawEffectPolygon(pts, effectType, tintColor, mainW, mainH) {
             if (!pts || pts.length < 3) return;
 
-            hiddenCtx.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
-            hiddenCtx.drawImage(videoElement, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
-            let imgData = hiddenCtx.getImageData(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+            let hw = hiddenCanvas.width;
+            let hh = hiddenCanvas.height;
+
+            hiddenCtx.clearRect(0, 0, hw, hh);
+            
+            // Jika menggunakan kamera depan, balik gambar di hidden canvas agar pemrosesan filter sinkron
+            hiddenCtx.save();
+            if (useFrontCamera) {
+                hiddenCtx.scale(-1, 1);
+                hiddenCtx.drawImage(videoElement, -hw, 0, hw, hh);
+            } else {
+                hiddenCtx.drawImage(videoElement, 0, 0, hw, hh);
+            }
+            hiddenCtx.restore();
+
+            let imgData = hiddenCtx.getImageData(0, 0, hw, hh);
             let data = imgData.data;
 
-            let blockSize = (effectType === 'mosaic') ? 16 : 1;
+            let blockSize = (effectType === 'mosaic') ? 8 : 1;
 
-            for (let yCoord = 0; yCoord < h; yCoord += blockSize) {
-                for (let xCoord = 0; xCoord < w; xCoord += blockSize) {
-                    let sampleX = Math.min(xCoord + Math.floor(blockSize / 2), w - 1);
-                    let sampleY = Math.min(yCoord + Math.floor(blockSize / 2), h - 1);
-                    let idx = (sampleY * w + sampleX) * 4;
+            for (let yCoord = 0; yCoord < hh; yCoord += blockSize) {
+                for (let xCoord = 0; xCoord < hw; xCoord += blockSize) {
+                    let sampleX = Math.min(xCoord + Math.floor(blockSize / 2), hw - 1);
+                    let sampleY = Math.min(yCoord + Math.floor(blockSize / 2), hh - 1);
+                    let idx = (sampleY * hw + sampleX) * 4;
 
                     let r = data[idx], g = data[idx+1], b = data[idx+2];
 
@@ -226,10 +363,9 @@
                         let gray = 0.299 * r + 0.587 * g + 0.114 * b;
                         r = gray; g = gray; b = gray;
                     } else if (effectType === 'negative') {
-                        // Negatif ditangani langsung lewat piksel asli
-                        for (let dy = 0; dy < blockSize && (yCoord + dy) < h; dy++) {
-                            for (let dx = 0; dx < blockSize && (xCoord + dx) < w; dx++) {
-                                let pIdx = ((yCoord + dy) * w + (xCoord + dx)) * 4;
+                        for (let dy = 0; dy < blockSize && (yCoord + dy) < hh; dy++) {
+                            for (let dx = 0; dx < blockSize && (xCoord + dx) < hw; dx++) {
+                                let pIdx = ((yCoord + dy) * hw + (xCoord + dx)) * 4;
                                 data[pIdx]   = 255 - data[pIdx];
                                 data[pIdx+1] = 255 - data[pIdx+1];
                                 data[pIdx+2] = 255 - data[pIdx+2];
@@ -265,12 +401,15 @@
                         r = gray > 100 ? 0 : 20;
                         g = gray > 100 ? 255 : 50;
                         b = gray > 100 ? 150 : 200;
+                    } else if (effectType === 'glow') {
+                        r = Math.min(255, r * 1.8 + tintColor.r * 1.2);
+                        g = Math.min(255, g * 1.8 + tintColor.g * 1.2);
+                        b = Math.min(255, b * 1.8 + tintColor.b * 1.2);
                     }
 
-                    // Terapkan blok warna ke area mozaik atau piksel tunggal
-                    for (let dy = 0; dy < blockSize && (yCoord + dy) < h; dy++) {
-                        for (let dx = 0; dx < blockSize && (xCoord + dx) < w; dx++) {
-                            let pIdx = ((yCoord + dy) * w + (xCoord + dx)) * 4;
+                    for (let dy = 0; dy < blockSize && (yCoord + dy) < hh; dy++) {
+                        for (let dx = 0; dx < blockSize && (xCoord + dx) < hw; dx++) {
+                            let pIdx = ((yCoord + dy) * hw + (xCoord + dx)) * 4;
                             data[pIdx]   = r * 0.35 + tintColor.r * 0.65;
                             data[pIdx+1] = g * 0.35 + tintColor.g * 0.65;
                             data[pIdx+2] = b * 0.35 + tintColor.b * 0.65;
@@ -284,13 +423,17 @@
             canvasCtx.save();
             drawStraightPolygon(pts);
             canvasCtx.clip();
-            canvasCtx.drawImage(hiddenCanvas, 0, 0);
+            canvasCtx.drawImage(hiddenCanvas, 0, 0, mainW, mainH);
             canvasCtx.restore();
 
             canvasCtx.save();
             drawStraightPolygon(pts);
-            canvasCtx.strokeStyle = effectType === 'cyber' ? '#00FFCC' : '#FFFFFF';
-            canvasCtx.lineWidth = 2.5;
+            canvasCtx.strokeStyle = (effectType === 'glow' || effectType === 'cyber') ? tintColor.hex : '#FFFFFF';
+            canvasCtx.lineWidth = effectType === 'glow' ? 4 : 2.5;
+            if (effectType === 'glow') {
+                canvasCtx.shadowColor = tintColor.hex;
+                canvasCtx.shadowBlur = 15;
+            }
             canvasCtx.stroke();
             canvasCtx.restore();
         }
@@ -300,7 +443,14 @@
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             
             if (results.image) {
-                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+                canvasCtx.save();
+                if (useFrontCamera) {
+                    canvasCtx.scale(-1, 1);
+                    canvasCtx.drawImage(results.image, -canvasElement.width, 0, canvasElement.width, canvasElement.height);
+                } else {
+                    canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+                }
+                canvasCtx.restore();
             }
 
             let w = canvasElement.width;
@@ -321,7 +471,10 @@
                     }
 
                     FINGER_TIPS.forEach((tipIdx, idx) => {
-                        const x = landmarks[tipIdx].x * w;
+                        let rawX = landmarks[tipIdx].x;
+                        if (useFrontCamera) rawX = 1.0 - rawX; // Sesuaikan koordinat landmark jika front camera ter-mirror
+
+                        const x = rawX * w;
                         const y = landmarks[tipIdx].y * h;
                         tipDict[idx] = {x, y};
                         avgX += x;
@@ -344,13 +497,11 @@
             let rightTips = detectedHands.length > 1 ? detectedHands[1].tips : null;
 
             let tNow = performance.now() / 1000;
-            let modeDesc = "Menunggu Tangan...";
 
             if (detectedHands.length === 1) {
                 let activeTips = detectedHands[0].tips;
                 let activeColor = COLORS[colorIndex];
                 let activeEffect = EFFECT_MODES[effectIndex];
-                modeDesc = `Satu Tangan | Warna: ${activeColor.name} | Efek: ${activeEffect.toUpperCase()}`;
 
                 updateTrail(activeTips, trailHistoryLeft);
                 clearTrailCompletely(trailHistoryRight);
@@ -366,9 +517,8 @@
 
                 let isClappingNow = checkIsClapping(leftTips, rightTips, results.multiHandLandmarks);
                 
-                // Toggle 5 mode secara bergantian saat clap
                 if (isClappingNow && !isClappingPrev && (tNow - lastClapToggleTime > 1.0)) {
-                    modeStateIndex = (modeStateIndex + 1) % 5;
+                    modeStateIndex = (modeStateIndex + 1) % 6;
                     lastClapToggleTime = tNow;
                 }
                 isClappingPrev = isClappingNow;
@@ -376,7 +526,6 @@
                 let sidePalette = [];
 
                 if (modeStateIndex === 0) {
-                    modeDesc = "Mode 1: Efek Khusus (Zebra, Thermal, Heat, Negative)";
                     sidePalette = [
                         {effect: 'zebra', color: COLORS[0]},
                         {effect: 'thermal', color: COLORS[1]},
@@ -384,7 +533,6 @@
                         {effect: 'negative', color: COLORS[3]}
                     ];
                 } else if (modeStateIndex === 1) {
-                    modeDesc = "Mode 2: 4 Warna Penuh";
                     sidePalette = [
                         {effect: 'normal', color: COLORS[0]}, 
                         {effect: 'normal', color: COLORS[2]}, 
@@ -392,7 +540,6 @@
                         {effect: 'normal', color: COLORS[5]}  
                     ];
                 } else if (modeStateIndex === 2) {
-                    modeDesc = "Mode 3: Cyber Neon Matrix Style";
                     sidePalette = [
                         {effect: 'cyber', color: COLORS[1]}, 
                         {effect: 'cyber', color: COLORS[3]}, 
@@ -400,18 +547,23 @@
                         {effect: 'cyber', color: COLORS[5]}  
                     ];
                 } else if (modeStateIndex === 3) {
-                    modeDesc = "Mode 4: Mozaik Piksel Art";
                     sidePalette = [
                         {effect: 'mosaic', color: COLORS[0]}, 
                         {effect: 'mosaic', color: COLORS[2]}, 
                         {effect: 'mosaic', color: COLORS[3]}, 
                         {effect: 'mosaic', color: COLORS[4]}  
                     ];
+                } else if (modeStateIndex === 4) {
+                    sidePalette = [
+                        {effect: 'glow', color: COLORS[1]},
+                        {effect: 'glow', color: COLORS[2]},
+                        {effect: 'glow', color: COLORS[4]},
+                        {effect: 'glow', color: COLORS[5]}
+                    ];
                 } else {
-                    modeDesc = "Mode 5: Random Gabungan Style";
                     sidePalette = [
                         {effect: 'mosaic', color: COLORS[0]}, 
-                        {effect: 'cyber', color: COLORS[1]}, 
+                        {effect: 'glow', color: COLORS[1]}, 
                         {effect: 'thermal', color: COLORS[2]}, 
                         {effect: 'zebra', color: COLORS[5]}  
                     ];
@@ -439,7 +591,6 @@
             drawCometTrails(trailHistoryLeft);
             drawCometTrails(trailHistoryRight);
 
-            statusElement.innerText = modeDesc;
             canvasCtx.restore();
         }
 
