@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hand Tracking - Negative Effect Test</title>
+    <title>Hand Tracking - Pure Negative Effect</title>
     <style>
         body {
             margin: 0;
             padding: 0;
-            background-color: #000;
+            background-color: #111;
             color: #fff;
             font-family: Arial, sans-serif;
             display: flex;
@@ -16,17 +16,16 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
-            overflow: hidden;
         }
         #container {
             position: relative;
             width: 100%;
             max-width: 640px;
             aspect-ratio: 4/3;
-            background: #111;
+            background: #000;
             border-radius: 12px;
             overflow: hidden;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.8);
         }
         video, canvas {
             position: absolute;
@@ -35,44 +34,40 @@
             width: 100%;
             height: 100%;
             object-fit: cover;
-            transform: scaleX(-1);
+            transform: scaleX(-1); /* Efek cermin webcam */
         }
         #status {
             position: absolute;
             top: 15px;
             left: 15px;
-            background: rgba(0, 0, 0, 0.7);
+            background: rgba(0, 0, 0, 0.8);
+            color: #00ffcc;
             padding: 8px 12px;
             border-radius: 6px;
             font-size: 14px;
             z-index: 10;
+            border: 1px solid #00ffcc;
         }
     </style>
 
-    <!-- Memuat Library MediaPipe Hands & Camera Utils -->
+    <!-- Library MediaPipe Hands & Camera Utils -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 </head>
 <body>
 
     <div id="container">
-        <div id="status">Memuat Kamera & AI...</div>
+        <div id="status">Memuat Kamera...</div>
         <video id="webcam" autoplay playsinline muted></video>
         <canvas id="output_canvas"></canvas>
     </div>
 
-    <!-- Hidden Canvas untuk pemrosesan filter negatif -->
-    <canvas id="hidden_canvas" style="display:none;"></canvas>
-
     <script>
         const videoElement = document.getElementById('webcam');
         const canvasElement = document.getElementById('output_canvas');
-        const canvasCtx = canvasElement.getContext('2d', { willReadFrequently: true });
-        
-        const hiddenCanvas = document.getElementById('hidden_canvas');
-        const hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
-
+        const canvasCtx = canvasElement.getContext('2d');
         const statusElement = document.getElementById('status');
+        
         const FINGER_TIPS = [4, 8, 12, 16, 20];
         let isRunningAI = false;
 
@@ -83,17 +78,13 @@
         hands.setOptions({
             maxNumHands: 1,
             modelComplexity: 1,
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
         });
 
         hands.onResults(results => {
-            isRunningAI = false; 
-            try {
-                renderFrame(results);
-            } catch (err) {
-                console.error("Render error:", err);
-            }
+            isRunningAI = false;
+            renderFrame(results);
         });
 
         const camera = new Camera(videoElement, {
@@ -102,14 +93,11 @@
                     if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
                         canvasElement.width = videoElement.videoWidth || 640;
                         canvasElement.height = videoElement.videoHeight || 480;
-                        hiddenCanvas.width = canvasElement.width;
-                        hiddenCanvas.height = canvasElement.height;
                     }
 
                     if (!isRunningAI) {
                         isRunningAI = true;
-                        await hands.send({ image: videoElement }).catch((err) => {
-                            console.error("AI send error:", err);
+                        await hands.send({ image: videoElement }).catch(() => {
                             isRunningAI = false;
                         });
                     }
@@ -120,13 +108,14 @@
         });
 
         camera.start()
-            .then(() => { statusElement.innerText = "Tunjukkan tangan Anda - Efek Negatif Aktif"; })
-            .catch(err => { statusElement.innerText = "Gagal akses kamera: " + err; });
+            .then(() => { statusElement.innerText = "Kamera Aktif - Tunjukkan Tangan Anda"; })
+            .catch(err => { statusElement.innerText = "Gagal Akses Kamera: " + err; });
 
         function renderFrame(results) {
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            
+
+            // 1. Gambar video normal di background
             if (results.image) {
                 canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
             }
@@ -145,22 +134,7 @@
                     });
                 });
 
-                // Ambil frame video terbaru ke hidden canvas untuk diproses pikselnya
-                hiddenCtx.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
-                hiddenCtx.drawImage(videoElement, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
-                let imgData = hiddenCtx.getImageData(0, 0, hiddenCanvas.width, hiddenCanvas.height);
-                let data = imgData.data;
-
-                // Terapkan rumus filter NEGATIF (255 - nilai RGB) pada seluruh piksel
-                for (let i = 0; i < data.length; i += 4) {
-                    data[i]     = 255 - data[i];     // Red
-                    data[i + 1] = 255 - data[i + 1]; // Green
-                    data[i + 2] = 255 - data[i + 2]; // Blue
-                }
-
-                hiddenCtx.putImageData(imgData, 0, 0);
-
-                // Buat kliping area polygon berdasarkan ujung jari tangan
+                // 2. Buat area kliping (polygon) berdasarkan ujung-ujung jari
                 canvasCtx.save();
                 canvasCtx.beginPath();
                 pts.forEach((pt, idx) => {
@@ -170,18 +144,31 @@
                 canvasCtx.closePath();
                 canvasCtx.clip();
 
-                // Gambar hasil negatif hanya di dalam area polygon tangan
-                canvasCtx.drawImage(hiddenCanvas, 0, 0);
+                // 3. Terapkan filter NEGATIF menggunakan globalCompositeOperation (Invert warna video)
+                canvasCtx.globalCompositeOperation = 'difference';
+                canvasCtx.fillStyle = 'white';
+                canvasCtx.fillRect(0, 0, w, h);
 
-                // Berikan garis tepi putih pada polygon
-                canvasCtx.strokeStyle = '#FFFFFF';
-                canvasCtx.lineWidth = 2;
-                canvasCtx.stroke();
+                // Timpa kembali video di dalam area kliping agar warna negatifnya terisolasi sempurna di tangan
+                canvasCtx.globalCompositeOperation = 'source-over';
+                canvasCtx.drawImage(videoElement, 0, 0, w, h);
+                
                 canvasCtx.restore();
 
-                statusElement.innerText = "Status: Efek Negatif Aktif pada Area Tangan";
+                // 4. Beri garis tepi agar bentuk area polygon tangan terlihat jelas
+                canvasCtx.beginPath();
+                pts.forEach((pt, idx) => {
+                    if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
+                    else canvasCtx.lineTo(pt.x, pt.y);
+                });
+                canvasCtx.closePath();
+                canvasCtx.strokeStyle = '#00ffcc';
+                canvasCtx.lineWidth = 2;
+                canvasCtx.stroke();
+
+                statusElement.innerText = "STATUS: Efek Negatif Berhasil Aktif!";
             } else {
-                statusElement.innerText = "Status: Menunggu Tangan Terdeteksi...";
+                statusElement.innerText = "Menunggu Tangan...";
             }
 
             canvasCtx.restore();
