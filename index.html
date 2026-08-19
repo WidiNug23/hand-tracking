@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Hand Geometry & Comet Trail Web</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+        #container {
+            position: relative;
+            width: 100%;
+            max-width: 640px;
+            aspect-ratio: 4 / 3;
+            background: #222;
+        }
+        video, canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Efek cermin (mirror) */
+        }
+        #status {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 8px 12px;
+            border-radius: 5px;
+            font-size: 14px;
+            z-index: 10;
+        }
+    </style>
+
+    <!-- Memuat MediaPipe Hands dan Camera Utils dari CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="container">
+        <video id="webcam" playsinline></video>
+        <canvas id="output_canvas"></canvas>
+        <div id="status">Memuat Kamera & AI...</div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const statusElement = document.getElementById('status');
+
+        const FINGER_TIPS = [4, 8, 12, 16, 20];
+        let trailLeft = Array.from({length: 5}, () => []);
+        let trailRight = Array.from({length: 5}, () => []);
+
+        const COLORS = [
+            {r: 255, g: 0, b: 0},    // Merah
+            {r: 0, g: 0, b: 255},    // Biru
+            {r: 0, g: 255, b: 255},  // Kuning
+            {r: 0, g: 255, b: 0},    // Hijau
+        ];
+
+        function onResults(results) {
+            // Sesuaikan ukuran canvas dengan video
+            if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
+                canvasElement.width = videoElement.videoWidth || 640;
+                canvasElement.height = videoElement.videoHeight || 480;
+            }
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // Gambar frame video asli
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            let numHands = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+            let smoothLeft = {};
+            let smoothRight = {};
+
+            if (numHands > 0) {
+                statusElement.innerText = numHands === 1 ? "Mode: Satu Tangan" : "Mode: Dua Tangan (4 Sisi)";
+                
+                results.multiHandLandmarks.forEach((landmarks, index) => {
+                    let handedness = results.multiHandedness[index].classification[0].label;
+                    // Karena video dicermin, label tangan dibalik
+                    let actualHand = handedness === "Left" ? "Right" : "Left";
+
+                    let fingertipDict = {};
+                    FINGER_TIPS.forEach((tipIdx, i) => {
+                        let x = landmarks[tipIdx].x * canvasElement.width;
+                        let y = landmarks[tipIdx].y * canvasElement.height;
+                        fingertipDict[i] = {x, y};
+
+                        if (actualHand === "Left") {
+                            trailLeft[i].unshift({x, y});
+                            if (trailLeft[i].length > 12) trailLeft[i].pop();
+                        } else {
+                            trailRight[i].unshift({x, y});
+                            if (trailRight[i].length > 12) trailRight[i].pop();
+                        }
+                    });
+
+                    if (actualHand === "Left") smoothLeft = fingertipDict;
+                    else smoothRight = fingertipDict;
+                });
+            } else {
+                statusElement.innerText = "Menunggu Tangan...";
+                for(let i=0; i<5; i++) {
+                    trailLeft[i] = [];
+                    trailRight[i] = [];
+                }
+            }
+
+            // Render Skenario Dua Tangan (4 Sisi Poligon)
+            let tipColors = {};
+            if (Object.keys(smoothLeft).length > 0 && Object.keys(smoothRight).length > 0) {
+                let sidePalette = [COLORS[0], COLORS[1], COLORS[2], COLORS[3]];
+                
+                for (let i = 0; i < 4; i++) {
+                    let pL1 = smoothLeft[i];
+                    let pL2 = smoothLeft[i+1];
+                    let pR2 = smoothRight[i+1];
+                    let pR1 = smoothRight[i];
+
+                    if (pL1 && pL2 && pR2 && pR1) {
+                        let color = sidePalette[i];
+                        tipColors[i] = color;
+                        tipColors[i+1] = color;
+
+                        canvasCtx.beginPath();
+                        canvasCtx.moveTo(pL1.x, pL1.y);
+                        canvasCtx.lineTo(pL2.x, pL2.y);
+                        canvasCtx.lineTo(pR2.x, pR2.y);
+                        canvasCtx.lineTo(pR1.x, pR1.y);
+                        canvasCtx.closePath();
+
+                        canvasCtx.fillStyle = `rgba(${color.r}, ${color.g}, ${color.b}, 0.35)`;
+                        canvasCtx.fill();
+                        canvasCtx.strokeStyle = "white";
+                        canvasCtx.lineWidth = 1.5;
+                        canvasCtx.stroke();
+                    }
+                }
+            }
+
+            // Fungsi Menggambar Ekor Komet (Fade ke Ujung)
+            function drawTrails(trailArray) {
+                trailArray.forEach((history, tipIdx) => {
+                    if (history.length < 2) return;
+                    let color = tipColors[tipIdx] || {r: 0, g: 255, b: 255};
+
+                    for (let i = 0; i < history.length - 1; i++) {
+                        let progress = i / history.length;
+                        let alpha = 0.8 * (1.0 - progress);
+                        let thickness = Math.max(1, 5 * (1.0 - progress));
+
+                        canvasCtx.beginPath();
+                        canvasCtx.moveTo(history[i].x, history[i].y);
+                        canvasCtx.lineTo(history[i+1].x, history[i+1].y);
+                        canvasCtx.strokeStyle = `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`;
+                        canvasCtx.lineWidth = thickness;
+                        canvasCtx.stroke();
+                    }
+                });
+            }
+
+            drawTrails(trailLeft);
+            drawTrails(trailRight);
+
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+
+        camera.start().catch(err => {
+            statusElement.innerText = "Gagal mengakses kamera! Izinkan akses kamera.";
+            console.error(err);
+        });
+    </script>
+</body>
+</html>
