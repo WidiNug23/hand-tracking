@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hand Geometry & Smooth Comet (Safe Render)</title>
+    <title>Hand Geometry & Multi-Effect (Full Variation)</title>
     <style>
         body {
             margin: 0;
@@ -67,23 +67,39 @@
         const canvasCtx = canvasElement.getContext('2d');
         const statusElement = document.getElementById('status');
 
-        const FINGER_TIPS = [4, 8, 12, 16, 20]; // Ibu jari, Telunjuk, Tengah, Manis, Kelingking
+        const FINGER_TIPS = [4, 8, 12, 16, 20]; // [Jempol, Telunjuk, Tengah, Manis, Kelingking]
         
-        let trailHistory1 = {0: [], 1: [], 2: [], 3: [], 4: []};
-        let trailHistory2 = {0: [], 1: [], 2: [], 3: [], 4: []};
+        let trailHistoryLeft = {0: [], 1: [], 2: [], 3: [], 4: []};
+        let trailHistoryRight = {0: [], 1: [], 2: [], 3: [], 4: []};
         let isRunningAI = false;
 
+        // Variabel Interaksi & State
+        let colorIndex = 0;
+        let effectIndex = 0;
+        let isFistedPrev = false;
+        let handVelocity = 0.0;
+        let prevAvgCenter = null;
+
+        const COLORS = [
+            {r: 0, g: 0, b: 255, name: "Merah", hex: "#0000FF"},
+            {r: 255, g: 0, b: 0, name: "Biru", hex: "#FF0000"},
+            {r: 0, g: 255, b: 255, name: "Kuning", hex: "#00FFFF"},
+            {r: 0, g: 255, b: 0, name: "Hijau", hex: "#00FF00"},
+            {r: 255, g: 0, b: 255, name: "Magenta", hex: "#FF00FF"},
+            {r: 255, g: 128, b: 0, name: "Oranye", hex: "#FF8000"}
+        ];
+
+        const EFFECT_MODES = ['normal', 'mono', 'negative', 'sepia', 'bright'];
+
         const hands = new Hands({
-            locateFile: (file) => {
-                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-            }
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
         });
 
         hands.setOptions({
             maxNumHands: 2,
             modelComplexity: 1,
-            minDetectionConfidence: 0.4,
-            minTrackingConfidence: 0.4
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
         });
 
         hands.onResults(results => {
@@ -117,12 +133,31 @@
         });
 
         camera.start()
-            .then(() => {
-                statusElement.innerText = "Arahkan tangan ke kamera...";
-            })
-            .catch(err => {
-                statusElement.innerText = "Gagal akses kamera: " + err;
+            .then(() => { statusElement.innerText = "Arahkan tangan ke kamera..."; })
+            .catch(err => { statusElement.innerText = "Gagal akses kamera: " + err; });
+
+        function checkIsFisted(landmarks, w, h) {
+            let wrist = {x: landmarks[0].x * w, y: landmarks[0].y * h};
+            let distances = [];
+            FINGER_TIPS.forEach(tipIdx => {
+                let tip = {x: landmarks[tipIdx].x * w, y: landmarks[tipIdx].y * h};
+                let dist = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
+                distances.push(dist);
             });
+            let avgDist = distances.reduce((a, b) => a + b, 0) / distances.length;
+            return avgDist < 100.0;
+        }
+
+        function applyMotionWave(pts, velocity, timeVal) {
+            let amplitude = Math.min(Math.max(velocity * 0.4, 0.0), 12.0);
+            if (amplitude < 0.5) return pts;
+
+            return pts.map((pt, idx) => {
+                let offsetX = Math.round(amplitude * Math.sin(timeVal * 12 + idx * 1.5));
+                let offsetY = Math.round(amplitude * Math.cos(timeVal * 12 + idx * 1.5));
+                return {x: pt.x + offsetX, y: pt.y + offsetY};
+            });
+        }
 
         function renderFrame(results) {
             canvasCtx.save();
@@ -132,17 +167,26 @@
                 canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
             }
 
+            let w = canvasElement.width;
+            let h = canvasElement.height;
             let detectedHands = [];
+            let isCurrentFisted = false;
 
             if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+                let numHands = results.multiHandLandmarks.length;
+
+                for (let i = 0; i < numHands; i++) {
                     const landmarks = results.multiHandLandmarks[i];
                     let tipDict = {};
                     let avgX = 0;
 
+                    if (numHands === 1 && checkIsFisted(landmarks, w, h)) {
+                        isCurrentFisted = true;
+                    }
+
                     FINGER_TIPS.forEach((tipIdx, idx) => {
-                        const x = landmarks[tipIdx].x * canvasElement.width;
-                        const y = landmarks[tipIdx].y * canvasElement.height;
+                        const x = landmarks[tipIdx].x * w;
+                        const y = landmarks[tipIdx].y * h;
                         tipDict[idx] = {x, y};
                         avgX += x;
                     });
@@ -151,105 +195,151 @@
                     detectedHands.push({ avgX, tips: tipDict });
                 }
 
-                // Urutkan tangan berdasarkan posisi X di layar
+                // Urutkan berdasarkan posisi X (Kiri ke Kanan layar)
                 detectedHands.sort((a, b) => a.avgX - b.avgX);
             }
 
-            let leftHandTips = detectedHands.length > 0 ? detectedHands[0].tips : null;
-            let rightHandTips = detectedHands.length > 1 ? detectedHands[1].tips : null;
+            // Logika ganti warna/efek via kepalan tangan (1 Tangan)
+            if (detectedHands.length === 1 && isCurrentFisted && !isFistedPrev) {
+                colorIndex = (colorIndex + 1) % COLORS.length;
+                effectIndex = (effectIndex + 1) % EFFECT_MODES.length;
+            }
+            isFistedPrev = isCurrentFisted;
 
-            // Update Trail amankah
-            updateTrail(leftHandTips, trailHistory1);
-            updateTrail(rightHandTips, trailHistory2);
+            let leftTips = detectedHands.length > 0 ? detectedHands[0].tips : null;
+            let rightTips = detectedHands.length > 1 ? detectedHands[1].tips : null;
 
-            // LOGIKA GEOMETRI UTAMA DENGAN AMAN
-            if (leftHandTips && rightHandTips) {
-                statusElement.innerText = "Dual-Hand Geometry Active (2 Tangan)";
-                let indices = [0, 1, 2, 3, 4];
-                let sideColors = [
-                    'rgba(0, 100, 255, 0.45)',    
-                    'rgba(255, 0, 100, 0.45)',    
-                    'rgba(0, 255, 200, 0.45)',  
-                    'rgba(100, 255, 0, 0.45)'     
-                ];
+            // Hitung kecepatan tangan untuk efek gelombang
+            let centers = [];
+            if (leftTips) centers.push(Object.values(leftTips).reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x:0, y:0}));
+            if (rightTips) centers.push(Object.values(rightTips).reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x:0, y:0}));
 
-                for (let i = 0; i < indices.length - 1; i++) {
-                    let i1 = indices[i], i2 = indices[i+1];
-                    
-                    canvasCtx.beginPath();
-                    canvasCtx.moveTo(leftHandTips[i1].x, leftHandTips[i1].y);
-                    canvasCtx.lineTo(leftHandTips[i2].x, leftHandTips[i2].y);
-                    canvasCtx.lineTo(rightHandTips[i2].x, rightHandTips[i2].y);
-                    canvasCtx.lineTo(rightHandTips[i1].x, rightHandTips[i1].y);
-                    canvasCtx.closePath();
-                    
-                    canvasCtx.fillStyle = sideColors[i % sideColors.length];
-                    canvasCtx.fill();
-                    canvasCtx.strokeStyle = '#ffffff';
-                    canvasCtx.lineWidth = 2;
-                    canvasCtx.stroke();
+            if (centers.length > 0) {
+                let currAvg = {
+                    x: centers.reduce((sum, c) => sum + c.x / 5, 0) / centers.length,
+                    y: centers.reduce((sum, c) => sum + c.y / 5, 0) / centers.length
+                };
+                if (prevAvgCenter) {
+                    handVelocity = Math.hypot(currAvg.x - prevAvgCenter.x, currAvg.y - prevAvgCenter.y);
                 }
-            } 
-            else if (leftHandTips || rightHandTips) {
-                statusElement.innerText = "Single-Hand Geometry Active (1 Tangan)";
-                let hand = leftHandTips || rightHandTips;
-                
-                canvasCtx.beginPath();
-                let keys = Object.keys(hand).sort();
-                keys.forEach((k, idx) => {
-                    let pt = hand[k];
-                    if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
-                    else canvasCtx.lineTo(pt.x, pt.y);
-                });
-                canvasCtx.closePath();
-                
-                canvasCtx.fillStyle = 'rgba(255, 0, 255, 0.4)';
-                canvasCtx.fill();
-                canvasCtx.strokeStyle = '#ffffff';
-                canvasCtx.lineWidth = 2;
-                canvasCtx.stroke();
+                prevAvgCenter = currAvg;
             } else {
-                statusElement.innerText = "Arahkan tangan ke kamera...";
-                clearTrail(trailHistory1);
-                clearTrail(trailHistory2);
+                handVelocity = 0.0;
             }
 
-            drawSmoothCometTrails(trailHistory1);
-            drawSmoothCometTrails(trailHistory2);
+            let tNow = performance.now() / 1000;
+            let modeDesc = "Menunggu Tangan...";
 
+            // --- SKENARIO 1: SATU TANGAN AKTIF ---
+            if (detectedHands.length === 1) {
+                let activeTips = detectedHands[0].tips;
+                let activeColor = COLORS[colorIndex];
+                let activeEffect = EFFECT_MODES[effectIndex];
+                modeDesc = `Satu Tangan | Warna: ${activeColor.name} | Efek: ${activeEffect.toUpperCase()}`;
+
+                updateTrail(activeTips, trailHistoryLeft);
+
+                let pts = Object.keys(activeTips).sort().map(k => activeTips[k]);
+                if (pts.length >= 3) {
+                    let wavyPts = applyMotionWave(pts, handVelocity, tNow);
+                    
+                    canvasCtx.save();
+                    canvasCtx.beginPath();
+                    wavyPts.forEach((pt, idx) => {
+                        if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
+                        else canvasCtx.lineTo(pt.x, pt.y);
+                    });
+                    canvasCtx.closePath();
+
+                    // Terapkan filter visual CSS / Canvas Fill sederhana
+                    canvasCtx.fillStyle = `rgba(${activeColor.r}, ${activeColor.g}, ${activeColor.b}, 0.45)`;
+                    canvasCtx.fill();
+                    canvasCtx.strokeStyle = '#FFFFFF';
+                    canvasCtx.lineWidth = 1.5;
+                    canvasCtx.stroke();
+                    canvasCtx.restore();
+                }
+            } 
+            // --- SKENARIO 2: DUA TANGAN AKTIF (4 Sisi Multi-Warna & Variasi) ---
+            else if (detectedHands.length >= 2) {
+                modeDesc = "Dua Tangan (Multi-Color & Multi-Effect 4 Sisi)";
+                updateTrail(leftTips, trailHistoryLeft);
+                updateTrail(rightTips, trailHistoryRight);
+
+                let sidePalette = [
+                    {color: 'rgba(0, 0, 255, 0.45)', stroke: '#0000FF'},
+                    {color: 'rgba(255, 0, 0, 0.45)', stroke: '#FF0000'},
+                    {color: 'rgba(0, 255, 255, 0.45)', stroke: '#00FFFF'},
+                    {color: 'rgba(0, 255, 0, 0.45)', stroke: '#00FF00'}
+                ];
+
+                for (let i = 0; i < 4; i++) {
+                    let i1 = i, i2 = i + 1;
+                    if (leftTips[i1] && leftTips[i2] && rightTips[i1] && rightTips[i2]) {
+                        let quadRaw = [
+                            leftTips[i1], 
+                            leftTips[i2], 
+                            rightTips[i2], 
+                            rightTips[i1]
+                        ];
+                        let wavyQuad = applyMotionWave(quadRaw, handVelocity, tNow + i * 0.2);
+
+                        canvasCtx.save();
+                        canvasCtx.beginPath();
+                        wavyQuad.forEach((pt, idx) => {
+                            if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
+                            else canvasCtx.lineTo(pt.x, pt.y);
+                        });
+                        canvasCtx.closePath();
+
+                        let sideStyle = sidePalette[i % sidePalette.length];
+                        canvasCtx.fillStyle = sideStyle.color;
+                        canvasCtx.fill();
+                        canvasCtx.strokeStyle = '#FFFFFF';
+                        canvasCtx.lineWidth = 1.5;
+                        canvasCtx.stroke();
+                        canvasCtx.restore();
+                    }
+                }
+            } else {
+                clearTrail(trailHistoryLeft);
+                clearTrail(trailHistoryRight);
+            }
+
+            // Gambar Ekor Komet Halus
+            drawCometTrails(trailHistoryLeft);
+            drawCometTrails(trailHistoryRight);
+
+            // Tampilkan Status Teks
+            statusElement.innerText = modeDesc;
             canvasCtx.restore();
         }
 
         function updateTrail(handTips, historyDict) {
-            if (!handTips) {
-                clearTrail(historyDict);
-                return;
-            }
+            if (!handTips) return;
             for (let idx in handTips) {
                 let pt = handTips[idx];
                 if (!historyDict[idx]) historyDict[idx] = [];
                 historyDict[idx].unshift({x: pt.x, y: pt.y});
-                if (historyDict[idx].length > 12) historyDict[idx].pop();
+                if (historyDict[idx].length > 15) historyDict[idx].pop();
             }
         }
 
         function clearTrail(historyDict) {
             for (let idx in historyDict) {
-                if (historyDict[idx] && historyDict[idx].length > 0) {
-                    historyDict[idx].pop();
-                }
+                if (historyDict[idx].length > 0) historyDict[idx].pop();
             }
         }
 
-        function drawSmoothCometTrails(historyDict) {
+        function drawCometTrails(historyDict) {
             for (let idx in historyDict) {
                 let pts = historyDict[idx];
-                if (!pts || pts.length < 2) continue;
+                if (!pts || pts.length < 3) continue;
 
                 for (let i = 0; i < pts.length - 1; i++) {
                     let progress = i / pts.length;
                     let alpha = 0.8 * (1.0 - progress);
-                    let thickness = Math.max(1, 5 * (1.0 - progress));
+                    let thickness = Math.max(1, 6 * (1.0 - progress));
 
                     canvasCtx.beginPath();
                     canvasCtx.moveTo(pts[i].x, pts[i].y);
