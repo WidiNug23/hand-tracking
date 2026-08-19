@@ -3,11 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hand Geometry & Optimized Smooth Recorder</title>
+    <title>Hand Geometry & Mobile Ultra Smooth</title>
     <style>
+        * {
+            box-sizing: border-box;
+        }
         body {
             margin: 0;
-            padding: 0;
+            padding: 10px;
             background-color: #000;
             color: #fff;
             font-family: Arial, sans-serif;
@@ -16,7 +19,7 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
-            overflow: hidden;
+            overflow-x: hidden;
         }
         #container {
             position: relative;
@@ -42,20 +45,28 @@
         .control-panel {
             margin-top: 15px;
             display: flex;
-            gap: 15px;
+            gap: 12px;
             z-index: 20;
+            flex-wrap: wrap;
+            justify-content: center;
+            width: 100%;
+            max-width: 854px;
         }
         .btn {
             background: rgba(255, 255, 255, 0.15);
             color: #fff;
             border: 1px solid rgba(255, 255, 255, 0.3);
-            padding: 10px 20px;
+            padding: 12px 24px;
             border-radius: 8px;
-            font-size: 14px;
+            font-size: 15px;
             font-weight: bold;
             cursor: pointer;
             transition: all 0.2s ease;
             backdrop-filter: blur(5px);
+            flex: 1;
+            min-width: 140px;
+            max-width: 200px;
+            text-align: center;
         }
         .btn:hover {
             background: rgba(255, 255, 255, 0.3);
@@ -69,6 +80,29 @@
             0% { opacity: 1; }
             50% { opacity: 0.5; }
             100% { opacity: 1; }
+        }
+
+        /* Penyesuaian Responsif untuk Tampilan Layar HP / Mobile */
+        @media (max-width: 768px) {
+            body {
+                padding: 5px;
+                justify-content: flex-start;
+                padding-top: 20px;
+            }
+            #container {
+                width: 100%;
+                aspect-ratio: 9/16; /* Menyesuaikan layar portrait HP agar lebih natural */
+                max-height: 70vh;
+            }
+            .control-panel {
+                margin-top: 15px;
+                gap: 10px;
+            }
+            .btn {
+                padding: 10px 16px;
+                font-size: 14px;
+                min-width: 120px;
+            }
         }
     </style>
 
@@ -141,9 +175,9 @@
 
         hands.setOptions({
             maxNumHands: 2,
-            modelComplexity: 0, // Diturunkan ke 0 (Lite model) agar sangat ringan dan anti-ngelag di HP
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
+            modelComplexity: 0, // Model Lite teringan agar tidak lag di HP
+            minDetectionConfidence: 0.4,
+            minTrackingConfidence: 0.4
         });
 
         hands.onResults(results => {
@@ -160,15 +194,20 @@
                 cameraInstance.stop();
             }
 
+            // Deteksi perangkat: Jika di HP (layar kecil), gunakan resolusi 640x360 agar sangat ringan dan bebas lag
+            const isMobile = window.innerWidth <= 768;
+            const targetWidth = isMobile ? 640 : 1280;
+            const targetHeight = isMobile ? 360 : 720;
+
             cameraInstance = new Camera(videoElement, {
                 onFrame: async () => {
                     if (videoElement.readyState >= 2) {
-                        if (canvasElement.width !== 1280 || canvasElement.height !== 720) {
-                            canvasElement.width = 1280;
-                            canvasElement.height = 720;
-                            // Ukuran hidden canvas diperkecil (1/3 dari HD) agar pemrosesan filter instan & mulus di HP/Laptop
-                            hiddenCanvas.width = 426;
-                            hiddenCanvas.height = 240;
+                        if (canvasElement.width !== targetWidth || canvasElement.height !== targetHeight) {
+                            canvasElement.width = targetWidth;
+                            canvasElement.height = targetHeight;
+                            // Hidden canvas diperkecil agar operasi pixel manipulation berjalan instan tanpa lag
+                            hiddenCanvas.width = isMobile ? 213 : 426;
+                            hiddenCanvas.height = isMobile ? 120 : 240;
                         }
 
                         if (!isRunningAI) {
@@ -181,8 +220,8 @@
                     }
                 },
                 facingMode: activeCamera,
-                width: 1280,
-                height: 720
+                width: targetWidth,
+                height: targetHeight
             });
 
             cameraInstance.start().catch(err => {
@@ -215,14 +254,13 @@
 
         function startRecording() {
             recordedChunks = [];
-            // Mengambil stream canvas dengan setting stabil (30 fps)
             const stream = canvasElement.captureStream(30);
             
-            let options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 5000000 }; // 5 Mbps agar HD & tajam tidak burik
+            let options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 3000000 };
             if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options = { mimeType: 'video/webm', videoBitsPerSecond: 4000000 };
+                options = { mimeType: 'video/webm', videoBitsPerSecond: 2500000 };
                 if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                    options = {}; // Fallback otomatis ke format bawaan browser
+                    options = {}; 
                 }
             }
 
@@ -254,7 +292,7 @@
                 }, 100);
             };
 
-            mediaRecorder.start(250); // Slice data berkala agar tidak membebani memori CPU saat merekam
+            mediaRecorder.start(250);
             isRecording = true;
             recordBtn.innerText = "⏹️ Stop & Simpan";
             recordBtn.classList.add('recording');
@@ -285,13 +323,13 @@
                 distances.push(distWrist);
 
                 let distBase = Math.hypot(tip.x - base.x, tip.y - base.y);
-                if (distBase < 50.0) {
+                if (distBase < 40.0) {
                     foldedCount++;
                 }
             });
 
             let avgDist = distances.reduce((a, b) => a + b, 0) / distances.length;
-            return (avgDist < 115.0) || (foldedCount >= 4);
+            return (avgDist < 100.0) || (foldedCount >= 4);
         }
 
         function checkIsClapping(leftTips, rightTips, allLandmarks) {
@@ -428,7 +466,7 @@
             canvasCtx.lineWidth = effectType === 'glow' ? 4 : 2.5;
             if (effectType === 'glow') {
                 canvasCtx.shadowColor = tintColor.hex;
-                canvasCtx.shadowBlur = 15;
+                canvasCtx.shadowBlur = 12;
             }
             canvasCtx.stroke();
             canvasCtx.restore();
@@ -599,7 +637,7 @@
                 let pt = handTips[idx];
                 if (!historyDict[idx]) historyDict[idx] = [];
                 historyDict[idx].unshift({x: pt.x, y: pt.y});
-                if (historyDict[idx].length > 6) historyDict[idx].pop();
+                if (historyDict[idx].length > 5) historyDict[idx].pop();
             }
         }
 
@@ -619,7 +657,7 @@
                 for (let i = 0; i < pts.length - 1; i++) {
                     let progress = i / pts.length;
                     let alpha = 0.9 * (1.0 - progress);
-                    let thickness = Math.max(1.5, 6 * (1.0 - progress));
+                    let thickness = Math.max(1.5, 5 * (1.0 - progress));
 
                     canvasCtx.beginPath();
                     canvasCtx.moveTo(pts[i].x, pts[i].y);
