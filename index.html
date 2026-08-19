@@ -40,6 +40,10 @@
             height: 100%;
             object-fit: cover;
         }
+        /* Efek Tampilan Cermin (Mirrored) di Layar saja */
+        .mirrored {
+            transform: scaleX(-1);
+        }
         .control-panel {
             margin-top: 15px;
             display: flex;
@@ -112,7 +116,8 @@
 
     <div id="container">
         <video id="webcam" autoplay playsinline muted></video>
-        <canvas id="output_canvas"></canvas>
+        <!-- Canvas diberi class mirrored agar tampil seperti cermin tanpa mengubah data aslinya -->
+        <canvas id="output_canvas" class="mirrored"></canvas>
     </div>
 
     <div class="control-panel">
@@ -191,10 +196,8 @@
         function getOptimalResolution() {
             const isPortrait = window.innerHeight > window.innerWidth;
             if (isPortrait) {
-                // Resolusi optimal Portrait (9:16) berbobot ringan untuk HP
                 return { width: 480, height: 854 };
             } else {
-                // Resolusi optimal Landscape (16:9)
                 return { width: 1280, height: 720 };
             }
         }
@@ -215,7 +218,6 @@
                             canvasElement.width = targetWidth;
                             canvasElement.height = targetHeight;
                             
-                            // Hidden canvas diperkecil agar pemrosesan piksel instan dan bebas lag
                             const isPortrait = window.innerHeight > window.innerWidth;
                             hiddenCanvas.width = isPortrait ? 120 : 320;
                             hiddenCanvas.height = isPortrait ? 213 : 180;
@@ -240,7 +242,6 @@
             });
         }
 
-        // Handle perubahan orientasi layar secara real-time
         window.addEventListener('resize', () => {
             clearTimeout(window.resizeTimer);
             window.resizeTimer = setTimeout(() => {
@@ -252,9 +253,14 @@
             useFrontCamera = !useFrontCamera;
             activeCamera = useFrontCamera ? 'user' : 'environment';
             
-            // Tanpa efek mirror (dinonaktifkan sepenuhnya)
-            canvasElement.style.transform = 'none';
-            videoElement.style.transform = 'none';
+            // Mengatur mode cermin otomatis khusus kamera depan
+            if (useFrontCamera) {
+                canvasElement.classList.add('mirrored');
+                videoElement.style.transform = 'scaleX(-1)';
+            } else {
+                canvasElement.classList.remove('mirrored');
+                videoElement.style.transform = 'scaleX(1)';
+            }
 
             startCamera();
         });
@@ -269,20 +275,31 @@
 
         function startRecording() {
             recordedChunks = [];
-            const stream = canvasElement.captureStream(30);
             
-            let options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 3000000 };
+            // Perbaikan kompatibilitas stream rekam dengan opsi fallback codec yang aman
+            let stream;
+            try {
+                stream = canvasElement.captureStream(30);
+            } catch (e) {
+                alert('Gagal mengambil stream canvas untuk direkam.');
+                return;
+            }
+
+            let options = { mimeType: 'video/webm;codecs=vp9' };
             if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                options = { mimeType: 'video/webm', videoBitsPerSecond: 2500000 };
+                options = { mimeType: 'video/webm;codecs=vp8' };
                 if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                    options = {}; 
+                    options = { mimeType: 'video/webm' };
+                    if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                        options = {}; // Gunakan format default browser
+                    }
                 }
             }
 
             try {
                 mediaRecorder = new MediaRecorder(stream, options);
             } catch (e) {
-                alert('Browser Anda tidak mendukung perekaman video.');
+                alert('Browser Anda tidak mendukung perekaman video: ' + e.message);
                 return;
             }
 
@@ -293,7 +310,7 @@
             };
 
             mediaRecorder.onstop = () => {
-                const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'video/webm' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.style.display = 'none';
@@ -307,6 +324,7 @@
                 }, 100);
             };
 
+            // Mulai rekam dengan interval chunk 250ms agar data terekam dengan stabil
             mediaRecorder.start(250);
             isRecording = true;
             recordBtn.innerText = "⏹️ Stop & Simpan";
