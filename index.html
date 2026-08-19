@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hand Geometry & Smooth Comet (Fixed)</title>
+    <title>Hand Geometry & Smooth Comet (Auto-Split)</title>
     <style>
         body {
             margin: 0;
@@ -67,10 +67,10 @@
         const canvasCtx = canvasElement.getContext('2d');
         const statusElement = document.getElementById('status');
 
-        const FINGER_TIPS = [4, 8, 12, 16, 20];
+        const FINGER_TIPS = [4, 8, 12, 16, 20]; // Ibu jari, Telunjuk, Tengah, Manis, Kelingking
         
-        let trailHistoryLeft = {0: [], 1: [], 2: [], 3: [], 4: []};
-        let trailHistoryRight = {0: [], 1: [], 2: [], 3: [], 4: []};
+        let trailHistory1 = {0: [], 1: [], 2: [], 3: [], 4: []};
+        let trailHistory2 = {0: [], 1: [], 2: [], 3: [], 4: []};
         let isRunningAI = false;
 
         const hands = new Hands({
@@ -81,9 +81,9 @@
 
         hands.setOptions({
             maxNumHands: 2,
-            modelComplexity: 1, // Ditingkatkan ke 1 agar deteksi lebih stabil
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
+            modelComplexity: 1,
+            minDetectionConfidence: 0.4,
+            minTrackingConfidence: 0.4
         });
 
         hands.onResults(results => {
@@ -132,74 +132,68 @@
                 canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
             }
 
-            let landmarksLeft = null;
-            let landmarksRight = null;
+            let detectedHands = [];
 
-            if (results.multiHandLandmarks && results.multiHandedness && results.multiHandLandmarks.length > 0) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
                 for (let i = 0; i < results.multiHandLandmarks.length; i++) {
-                    const rawLabel = results.multiHandedness[i].classification[0].label;
-                    // Dibalik agar sesuai dengan tampilan video yang menggunakan scaleX(-1) (cermin)
-                    const handLabel = rawLabel === 'Left' ? 'Right' : 'Left';
                     const landmarks = results.multiHandLandmarks[i];
-
                     let tipDict = {};
+                    let avgX = 0;
+
                     FINGER_TIPS.forEach((tipIdx, idx) => {
                         const x = landmarks[tipIdx].x * canvasElement.width;
                         const y = landmarks[tipIdx].y * canvasElement.height;
                         tipDict[idx] = {x, y};
-
-                        if (handLabel === 'Left') {
-                            if (!trailHistoryLeft[idx]) trailHistoryLeft[idx] = [];
-                            trailHistoryLeft[idx].unshift({x, y});
-                            if (trailHistoryLeft[idx].length > 15) trailHistoryLeft[idx].pop();
-                        } else {
-                            if (!trailHistoryRight[idx]) trailHistoryRight[idx] = [];
-                            trailHistoryRight[idx].unshift({x, y});
-                            if (trailHistoryRight[idx].length > 15) trailHistoryRight[idx].pop();
-                        }
+                        avgX += x;
                     });
+                    avgX /= FINGER_TIPS.length;
 
-                    if (handLabel === 'Left') landmarksLeft = tipDict;
-                    else landmarksRight = tipDict;
+                    detectedHands.push({ avgX, tips: tipDict });
                 }
-            } else {
-                for (let i in trailHistoryLeft) trailHistoryLeft[i] = [];
-                for (let i in trailHistoryRight) trailHistoryRight[i] = [];
+
+                // Urutkan tangan berdasarkan posisi X di layar (Kiri vs Kanan)
+                detectedHands.sort((a, b) => a.avgX - b.avgX);
             }
 
-            // Logika Geometri Dua Tangan
-            if (landmarksLeft && landmarksRight) {
-                statusElement.innerText = "Dua Tangan Aktif (Multi-Color 4 Sisi)";
+            let leftHandTips = detectedHands.length > 0 ? detectedHands[0].tips : null;
+            let rightHandTips = detectedHands.length > 1 ? detectedHands[1].tips : null;
+
+            // Update Riwayat Ekor Komet (Trail)
+            updateTrail(leftHandTips, trailHistory1);
+            updateTrail(rightHandTips, trailHistory2);
+
+            // LOGIKA GEOMETRI UTAMA
+            if (leftHandTips && rightHandTips) {
+                statusElement.innerText = "Dual-Hand Geometry Active (2 Tangan)";
                 let indices = [0, 1, 2, 3, 4];
                 let sideColors = [
-                    'rgba(0, 0, 255, 0.4)',    
-                    'rgba(255, 0, 0, 0.4)',    
-                    'rgba(0, 255, 255, 0.4)',  
-                    'rgba(0, 255, 0, 0.4)'     
+                    'rgba(0, 100, 255, 0.45)',    
+                    'rgba(255, 0, 100, 0.45)',    
+                    'rgba(0, 255, 200, 0.45)',  
+                    'rgba(100, 255, 0, 0.45)'     
                 ];
 
+                // Hubungkan sisi antar titik jari kedua tangan
                 for (let i = 0; i < indices.length - 1; i++) {
                     let i1 = indices[i], i2 = indices[i+1];
-                    if (landmarksLeft[i1] && landmarksLeft[i2] && landmarksRight[i1] && landmarksRight[i2]) {
-                        canvasCtx.beginPath();
-                        canvasCtx.moveTo(landmarksLeft[i1].x, landmarksLeft[i1].y);
-                        canvasCtx.lineTo(landmarksLeft[i2].x, landmarksLeft[i2].y);
-                        canvasCtx.lineTo(landmarksRight[i2].x, landmarksRight[i2].y);
-                        canvasCtx.lineTo(landmarksRight[i1].x, landmarksRight[i1].y);
-                        canvasCtx.closePath();
-                        
-                        canvasCtx.fillStyle = sideColors[i % sideColors.length];
-                        canvasCtx.fill();
-                        canvasCtx.strokeStyle = 'white';
-                        canvasCtx.lineWidth = 1.5;
-                        canvasCtx.stroke();
-                    }
+                    
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(leftHandTips[i1].x, leftHandTips[i1].y);
+                    canvasCtx.lineTo(leftHandTips[i2].x, leftHandTips[i2].y);
+                    canvasCtx.lineTo(rightHandTips[i2].x, rightHandTips[i2].y);
+                    canvasCtx.lineTo(rightHandTips[i1].x, rightHandTips[i1].y);
+                    canvasCtx.closePath();
+                    
+                    canvasCtx.fillStyle = sideColors[i % sideColors.length];
+                    canvasCtx.fill();
+                    canvasCtx.strokeStyle = '#ffffff';
+                    canvasCtx.lineWidth = 2;
+                    canvasCtx.stroke();
                 }
             } 
-            // Logika Geometri Satu Tangan
-            else if (landmarksLeft || landmarksRight) {
-                statusElement.innerText = "Satu Tangan Aktif";
-                let hand = landmarksLeft || landmarksRight;
+            else if (leftHandTips || rightHandTips) {
+                statusElement.innerText = "Single-Hand Geometry Active (1 Tangan)";
+                let hand = leftHandTips || rightHandTips;
                 
                 canvasCtx.beginPath();
                 Object.keys(hand).sort().forEach((k, idx) => {
@@ -211,28 +205,50 @@
                 
                 canvasCtx.fillStyle = 'rgba(255, 0, 255, 0.4)';
                 canvasCtx.fill();
-                canvasCtx.strokeStyle = 'white';
-                canvasCtx.lineWidth = 1.5;
+                canvasCtx.strokeStyle = '#ffffff';
+                canvasCtx.lineWidth = 2;
                 canvasCtx.stroke();
             } else {
                 statusElement.innerText = "Arahkan tangan ke kamera...";
+                // Kosongkan riwayat jika tidak ada tangan
+                clearTrail(trailHistory1);
+                clearTrail(trailHistory2);
             }
 
-            drawSmoothCometTrails(trailHistoryLeft);
-            drawSmoothCometTrails(trailHistoryRight);
+            drawSmoothCometTrails(trailHistory1);
+            drawSmoothCometTrails(trailHistory2);
 
             canvasCtx.restore();
+        }
+
+        function updateTrail(handTips, historyDict) {
+            if (!handTips) {
+                clearTrail(historyDict);
+                return;
+            }
+            for (let idx in handTips) {
+                let pt = handTips[idx];
+                if (!historyDict[idx]) historyDict[idx] = [];
+                historyDict[idx].unshift({x: pt.x, y: pt.y});
+                if (historyDict[idx].length > 12) historyDict[idx].pop();
+            }
+        }
+
+        function clearTrail(historyDict) {
+            for (let idx in historyDict) {
+                if (historyDict[idx].length > 0) historyDict[idx].pop();
+            }
         }
 
         function drawSmoothCometTrails(historyDict) {
             for (let idx in historyDict) {
                 let pts = historyDict[idx];
-                if (pts.length < 3) continue;
+                if (pts.length < 2) continue;
 
                 for (let i = 0; i < pts.length - 1; i++) {
                     let progress = i / pts.length;
                     let alpha = 0.8 * (1.0 - progress);
-                    let thickness = Math.max(1, 6 * (1.0 - progress));
+                    let thickness = Math.max(1, 5 * (1.0 - progress));
 
                     canvasCtx.beginPath();
                     canvasCtx.moveTo(pts[i].x, pts[i].y);
@@ -241,13 +257,6 @@
                     canvasCtx.lineWidth = thickness;
                     canvasCtx.lineCap = 'round';
                     canvasCtx.stroke();
-
-                    if (i === 0) {
-                        canvasCtx.beginPath();
-                        canvasCtx.arc(pts[i].x, pts[i].y, 3, 0, 2 * Math.PI);
-                        canvasCtx.fillStyle = 'white';
-                        canvasCtx.fill();
-                    }
                 }
             }
         }
