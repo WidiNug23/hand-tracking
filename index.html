@@ -61,10 +61,17 @@
         <canvas id="output_canvas"></canvas>
     </div>
 
+    <!-- Hidden Canvas untuk pemrosesan filter gambar -->
+    <canvas id="hidden_canvas" style="display:none;"></canvas>
+
     <script>
         const videoElement = document.getElementById('webcam');
         const canvasElement = document.getElementById('output_canvas');
-        const canvasCtx = canvasElement.getContext('2d');
+        const canvasCtx = canvasElement.getContext('2d', { willReadFrequently: true });
+        
+        const hiddenCanvas = document.getElementById('hidden_canvas');
+        const hiddenCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
+
         const statusElement = document.getElementById('status');
 
         const FINGER_TIPS = [4, 8, 12, 16, 20]; // [Jempol, Telunjuk, Tengah, Manis, Kelingking]
@@ -117,6 +124,8 @@
                     if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
                         canvasElement.width = videoElement.videoWidth || 640;
                         canvasElement.height = videoElement.videoHeight || 480;
+                        hiddenCanvas.width = canvasElement.width;
+                        hiddenCanvas.height = canvasElement.height;
                     }
 
                     if (!isRunningAI) {
@@ -136,16 +145,21 @@
             .then(() => { statusElement.innerText = "Arahkan tangan ke kamera..."; })
             .catch(err => { statusElement.innerText = "Gagal akses kamera: " + err; });
 
+        // Deteksi kepalan tangan adaptif menggunakan rasio jarak telapak tangan (landmark 0 ke 9)
         function checkIsFisted(landmarks, w, h) {
             let wrist = {x: landmarks[0].x * w, y: landmarks[0].y * h};
+            let indexMCP = {x: landmarks[9].x * w, y: landmarks[9].y * h};
+            let palmScale = Math.hypot(indexMCP.x - wrist.x, indexMCP.y - wrist.y);
+
             let distances = [];
             FINGER_TIPS.forEach(tipIdx => {
                 let tip = {x: landmarks[tipIdx].x * w, y: landmarks[tipIdx].y * h};
-                let dist = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
-                distances.push(dist);
+                distances.push(Math.hypot(tip.x - wrist.x, tip.y - wrist.y));
             });
             let avgDist = distances.reduce((a, b) => a + b, 0) / distances.length;
-            return avgDist < 100.0;
+            
+            // Jika jarak ujung jari ke pergelangan dekat relatif terhadap ukuran telapak
+            return (avgDist / palmScale) < 1.35;
         }
 
         function applyMotionWave(pts, velocity, timeVal) {
@@ -157,6 +171,65 @@
                 let offsetY = Math.round(amplitude * Math.cos(timeVal * 12 + idx * 1.5));
                 return {x: pt.x + offsetX, y: pt.y + offsetY};
             });
+        }
+
+        // Fungsi menerapkan efek visual (Mono, Negative, Sepia, Bright) pada area Polygon
+        function drawEffectPolygon(wavyPts, effectType, tintColor) {
+            hiddenCtx.clearRect(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+            hiddenCtx.drawImage(videoElement, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
+
+            let imgData = hiddenCtx.getImageData(0, 0, hiddenCanvas.width, hiddenCanvas.height);
+            let data = imgData.data;
+
+            // Buat path clipping untuk area polygon tangan
+            canvasCtx.save();
+            canvasCtx.beginPath();
+            wavyPts.forEach((pt, idx) => {
+                if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
+                else canvasCtx.lineTo(pt.x, pt.y);
+            });
+            canvasCtx.closePath();
+            canvasCtx.clip();
+
+            // Render ulang video dasar di dalam kliping
+            canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+
+            // Ambil data piksel area canvas utama
+            let mainImgData = canvasCtx.getImageData(0, 0, canvasElement.width, canvasElement.height);
+            let d = mainImgData.data;
+
+            for (let i = 0; i < d.length; i += 4) {
+                let r = d[i], g = d[i+1], b = d[i+2];
+
+                if (effectType === 'mono') {
+                    let gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                    r = gray; g = gray; b = gray;
+                } else if (effectType === 'negative') {
+                    r = 255 - r; g = 255 - g; b = 255 - b;
+                } else if (effectType === 'sepia') {
+                    let tr = (r * 0.393) + (g * 0.769) + (b * 0.189);
+                    let tg = (r * 0.349) + (g * 0.686) + (b * 0.168);
+                    let tb = (r * 0.272) + (g * 0.534) + (b * 0.131);
+                    r = Math.min(255, tr); g = Math.min(255, tg); b = Math.min(255, tb);
+                } else if (effectType === 'bright') {
+                    r = Math.min(255, r * 1.3 + 25);
+                    g = Math.min(255, g * 1.3 + 25);
+                    b = Math.min(255, b * 1.3 + 25);
+                }
+
+                // Tambahkan tint color transparan
+                d[i] = r * 0.75 + tintColor.r * 0.25;
+                d[i+1] = g * 0.75 + tintColor.g * 0.25;
+                d[i+2] = b * 0.75 + tintColor.b * 0.25;
+            }
+
+            canvasCtx.putImageData(mainImgData, 0, 0);
+            
+            // Garis pinggir polygon putih
+            canvasCtx.strokeStyle = '#FFFFFF';
+            canvasCtx.lineWidth = 1.5;
+            canvasCtx.stroke();
+            canvasCtx.restore();
         }
 
         function renderFrame(results) {
@@ -195,11 +268,10 @@
                     detectedHands.push({ avgX, tips: tipDict });
                 }
 
-                // Urutkan berdasarkan posisi X (Kiri ke Kanan layar)
                 detectedHands.sort((a, b) => a.avgX - b.avgX);
             }
 
-            // Logika ganti warna/efek via kepalan tangan (1 Tangan)
+            // Ganti warna & efek otomatis saat melakukan kepalan tangan (1 Tangan)
             if (detectedHands.length === 1 && isCurrentFisted && !isFistedPrev) {
                 colorIndex = (colorIndex + 1) % COLORS.length;
                 effectIndex = (effectIndex + 1) % EFFECT_MODES.length;
@@ -209,7 +281,7 @@
             let leftTips = detectedHands.length > 0 ? detectedHands[0].tips : null;
             let rightTips = detectedHands.length > 1 ? detectedHands[1].tips : null;
 
-            // Hitung kecepatan tangan untuk efek gelombang
+            // Hitung kecepatan tangan untuk gelombang
             let centers = [];
             if (leftTips) centers.push(Object.values(leftTips).reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x:0, y:0}));
             if (rightTips) centers.push(Object.values(rightTips).reduce((acc, p) => ({x: acc.x + p.x, y: acc.y + p.y}), {x:0, y:0}));
@@ -242,22 +314,7 @@
                 let pts = Object.keys(activeTips).sort().map(k => activeTips[k]);
                 if (pts.length >= 3) {
                     let wavyPts = applyMotionWave(pts, handVelocity, tNow);
-                    
-                    canvasCtx.save();
-                    canvasCtx.beginPath();
-                    wavyPts.forEach((pt, idx) => {
-                        if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
-                        else canvasCtx.lineTo(pt.x, pt.y);
-                    });
-                    canvasCtx.closePath();
-
-                    // Terapkan filter visual CSS / Canvas Fill sederhana
-                    canvasCtx.fillStyle = `rgba(${activeColor.r}, ${activeColor.g}, ${activeColor.b}, 0.45)`;
-                    canvasCtx.fill();
-                    canvasCtx.strokeStyle = '#FFFFFF';
-                    canvasCtx.lineWidth = 1.5;
-                    canvasCtx.stroke();
-                    canvasCtx.restore();
+                    drawEffectPolygon(wavyPts, activeEffect, activeColor);
                 }
             } 
             // --- SKENARIO 2: DUA TANGAN AKTIF (4 Sisi Multi-Warna & Variasi) ---
@@ -267,10 +324,10 @@
                 updateTrail(rightTips, trailHistoryRight);
 
                 let sidePalette = [
-                    {color: 'rgba(0, 0, 255, 0.45)', stroke: '#0000FF'},
-                    {color: 'rgba(255, 0, 0, 0.45)', stroke: '#FF0000'},
-                    {color: 'rgba(0, 255, 255, 0.45)', stroke: '#00FFFF'},
-                    {color: 'rgba(0, 255, 0, 0.45)', stroke: '#00FF00'}
+                    {effect: 'mono', color: COLORS[0]},
+                    {effect: 'negative', color: COLORS[1]},
+                    {effect: 'sepia', color: COLORS[2]},
+                    {effect: 'bright', color: COLORS[3]}
                 ];
 
                 for (let i = 0; i < 4; i++) {
@@ -283,22 +340,9 @@
                             rightTips[i1]
                         ];
                         let wavyQuad = applyMotionWave(quadRaw, handVelocity, tNow + i * 0.2);
-
-                        canvasCtx.save();
-                        canvasCtx.beginPath();
-                        wavyQuad.forEach((pt, idx) => {
-                            if (idx === 0) canvasCtx.moveTo(pt.x, pt.y);
-                            else canvasCtx.lineTo(pt.x, pt.y);
-                        });
-                        canvasCtx.closePath();
-
                         let sideStyle = sidePalette[i % sidePalette.length];
-                        canvasCtx.fillStyle = sideStyle.color;
-                        canvasCtx.fill();
-                        canvasCtx.strokeStyle = '#FFFFFF';
-                        canvasCtx.lineWidth = 1.5;
-                        canvasCtx.stroke();
-                        canvasCtx.restore();
+                        
+                        drawEffectPolygon(wavyQuad, sideStyle.effect, sideStyle.color);
                     }
                 }
             } else {
@@ -310,7 +354,6 @@
             drawCometTrails(trailHistoryLeft);
             drawCometTrails(trailHistoryRight);
 
-            // Tampilkan Status Teks
             statusElement.innerText = modeDesc;
             canvasCtx.restore();
         }
