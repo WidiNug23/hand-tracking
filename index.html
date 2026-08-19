@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Hand Tracking & Comet Trail - Optimized</title>
+    <title>Hand Tracking & Comet Trail - Worker Thread</title>
     <style>
         body {
             margin: 0;
@@ -47,16 +47,13 @@
             z-index: 10;
         }
     </style>
-
-    <!-- Memuat MediaPipe Tasks Vision dari CDN Resmi Terbaru -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/vision_bundle.js" crossorigin="anonymous"></script>
 </head>
 <body>
 
     <div id="container">
         <video id="webcam" autoplay playsinline muted></video>
         <canvas id="output_canvas"></canvas>
-        <div id="status">Memuat Model AI Terbaru...</div>
+        <div id="status">Memuat AI Worker...</div>
     </div>
 
     <script>
@@ -64,11 +61,6 @@
         const canvasElement = document.getElementById('output_canvas');
         const canvasCtx = canvasElement.getContext('2d', { alpha: false });
         const statusElement = document.getElementById('status');
-
-        let handLandmarker = undefined;
-        let runningMode = "VIDEO";
-        let lastVideoTime = -1;
-        let webcamRunning = false;
 
         const FINGER_TIPS = [4, 8, 12, 16, 20];
         let trailLeft = Array.from({length: 5}, () => []);
@@ -81,41 +73,43 @@
             {r: 0, g: 255, b: 0},    // Hijau
         ];
 
-        // 1. Inisialisasi HandLandmarker (Versi Tasks Vision yang Ringan)
-        async function createHandLandmarker() {
-            const vision = await FilesetResolver.forVisionTasks(
-                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
-            );
-            handLandmarker = await HandLandmarker.createFromOptions(vision, {
-                baseOptions: {
-                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
-                    delegate: "GPU"
-                },
-                runningMode: runningMode,
-                numHands: 2
-            });
-            statusElement.innerText = "Model Siap. Membuka Kamera...";
-            startWebcam();
-        }
-        createHandLandmarker();
+        let latestResults = null;
+        let isWorkerBusy = false;
+        let worker = null;
 
-        // 2. Menyalakan Kamera HP
-        function startWebcam() {
-            const constraints = {
-                video: { width: 640, height: 480 }
+        // Inisialisasi Web Worker
+        function initWorker() {
+            worker = new Worker('worker.js');
+            
+            worker.onmessage = (event) => {
+                const { type, results } = event.data;
+                if (type === "READY") {
+                    statusElement.innerText = "AI Siap. Membuka Kamera...";
+                    startWebcam();
+                } else if (type === "RESULTS") {
+                    latestResults = results;
+                    isWorkerBusy = false; // Bebas menerima frame baru setelah selesai
+                }
             };
-            navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
-                videoElement.srcObject = stream;
-                videoElement.addEventListener("loadeddata", predictWebcam);
-                statusElement.innerText = "Kamera Aktif. Menunggu Tangan...";
-            }).catch(err => {
-                statusElement.innerText = "Gagal mengakses kamera!";
-                console.error(err);
-            });
         }
 
-        // 3. Loop Deteksi & Render Utama (Sangat Mulus)
-        async function predictWebcam() {
+        function startWebcam() {
+            navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
+                .then((stream) => {
+                    videoElement.srcObject = stream;
+                    videoElement.addEventListener("loadeddata", () => {
+                        statusElement.innerText = "Kamera Aktif. Menunggu Tangan...";
+                        requestAnimationFrame(renderLoop);
+                    });
+                })
+                .catch(err => {
+                    statusElement.innerText = "Gagal mengakses kamera!";
+                    console.error(err);
+                });
+        }
+
+        // Loop utama halaman (berjalan mulus 60 FPS tanpa terhalang AI)
+        async function renderLoop() {
             if (canvasElement.width !== videoElement.videoWidth || canvasElement.height !== videoElement.videoHeight) {
                 canvasElement.width = videoElement.videoWidth || 640;
                 canvasElement.height = videoElement.videoHeight || 480;
@@ -125,107 +119,116 @@
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
 
-            let startTimeMs = performance.now();
-            if (handLandmarker && videoElement.currentTime !== lastVideoTime) {
-                lastVideoTime = videoElement.currentTime;
-                let results = handLandmarker.detectForVideo(videoElement, startTimeMs);
-                
-                let numHands = (results && results.landmarks) ? results.landmarks.length : 0;
-                let smoothLeft = {};
-                let smoothRight = {};
-
-                if (numHands > 0) {
-                    statusElement.innerText = numHands === 1 ? "Mode: Satu Tangan" : "Mode: Dua Tangan (4 Sisi)";
-                    
-                    results.landmarks.forEach((landmarks, index) => {
-                        let handedness = results.handednesses[index][0].categoryName;
-                        // Karena video dicermin, balik label tangan
-                        let actualHand = handedness === "Left" ? "Right" : "Left";
-
-                        let fingertipDict = {};
-                        FINGER_TIPS.forEach((tipIdx, i) => {
-                            let x = landmarks[tipIdx].x * canvasElement.width;
-                            let y = landmarks[tipIdx].y * canvasElement.height;
-                            fingertipDict[i] = {x, y};
-
-                            if (actualHand === "Left") {
-                                trailLeft[i].unshift({x, y});
-                                if (trailLeft[i].length > 10) trailLeft[i].pop();
-                            } else {
-                                trailRight[i].unshift({x, y});
-                                if (trailRight[i].length > 10) trailRight[i].pop();
-                            }
-                        });
-
-                        if (actualHand === "Left") smoothLeft = fingertipDict;
-                        else smoothRight = fingertipDict;
-                    });
-                } else {
-                    statusElement.innerText = "Menunggu Tangan...";
-                    for(let i=0; i<5; i++) {
-                        trailLeft[i] = [];
-                        trailRight[i] = [];
-                    }
+            // Kirim frame ke Web Worker jika worker sedang tidak sibuk
+            if (worker && !isWorkerBusy && videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
+                isWorkerBusy = true;
+                try {
+                    const imageBitmap = await createImageBitmap(videoElement);
+                    worker.postMessage({ imageBitmap, timestamp: performance.now() }, [imageBitmap]);
+                } catch (e) {
+                    isWorkerBusy = false;
                 }
-
-                let tipColors = {};
-                if (Object.keys(smoothLeft).length > 0 && Object.keys(smoothRight).length > 0) {
-                    let sidePalette = [COLORS[0], COLORS[1], COLORS[2], COLORS[3]];
-                    
-                    for (let i = 0; i < 4; i++) {
-                        let pL1 = smoothLeft[i];
-                        let pL2 = smoothLeft[i+1];
-                        let pR2 = smoothRight[i+1];
-                        let pR1 = smoothRight[i];
-
-                        if (pL1 && pL2 && pR2 && pR1) {
-                            let color = sidePalette[i];
-                            tipColors[i] = color;
-                            tipColors[i+1] = color;
-
-                            canvasCtx.beginPath();
-                            canvasCtx.moveTo(pL1.x, pL1.y);
-                            canvasCtx.lineTo(pL2.x, pL2.y);
-                            canvasCtx.lineTo(pR2.x, pR2.y);
-                            canvasCtx.lineTo(pR1.x, pR1.y);
-                            canvasCtx.closePath();
-
-                            canvasCtx.fillStyle = `rgba(${color.r}, ${color.g}, ${color.b}, 0.35)`;
-                            canvasCtx.fill();
-                            canvasCtx.strokeStyle = "white";
-                            canvasCtx.lineWidth = 1.5;
-                            canvasCtx.stroke();
-                        }
-                    }
-                }
-
-                function drawTrails(trailArray) {
-                    trailArray.forEach((history, tipIdx) => {
-                        if (history.length < 2) return;
-                        let color = tipColors[tipIdx] || {r: 0, g: 255, b: 255};
-
-                        for (let i = 0; i < history.length - 1; i++) {
-                            let progress = i / history.length;
-                            let alpha = 0.8 * (1.0 - progress);
-                            let thickness = Math.max(1, 4 * (1.0 - progress));
-
-                            canvasCtx.beginPath();
-                            canvasCtx.moveTo(history[i].x, history[i].y);
-                            canvasCtx.lineTo(history[i+1].x, history[i+1].y);
-                            canvasCtx.strokeStyle = `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`;
-                            canvasCtx.lineWidth = thickness;
-                            canvasCtx.stroke();
-                        }
-                    });
-                }
-
-                drawTrails(trailLeft);
-                drawTrails(trailRight);
             }
 
+            // Render hasil deteksi tangan dari Worker
+            let results = latestResults;
+            let numHands = (results && results.landmarks) ? results.landmarks.length : 0;
+            let smoothLeft = {};
+            let smoothRight = {};
+
+            if (numHands > 0) {
+                statusElement.innerText = numHands === 1 ? "Mode: Satu Tangan" : "Mode: Dua Tangan (4 Sisi)";
+                
+                results.landmarks.forEach((landmarks, index) => {
+                    let handedness = results.handednesses[index][0].categoryName;
+                    let actualHand = handedness === "Left" ? "Right" : "Left";
+
+                    let fingertipDict = {};
+                    FINGER_TIPS.forEach((tipIdx, i) => {
+                        let x = landmarks[tipIdx].x * canvasElement.width;
+                        let y = landmarks[tipIdx].y * canvasElement.height;
+                        fingertipDict[i] = {x, y};
+
+                        if (actualHand === "Left") {
+                            trailLeft[i].unshift({x, y});
+                            if (trailLeft[i].length > 10) trailLeft[i].pop();
+                        } else {
+                            trailRight[i].unshift({x, y});
+                            if (trailRight[i].length > 10) trailRight[i].pop();
+                        }
+                    });
+
+                    if (actualHand === "Left") smoothLeft = fingertipDict;
+                    else smoothRight = fingertipDict;
+                });
+            } else {
+                statusElement.innerText = "Menunggu Tangan...";
+                for(let i=0; i<5; i++) {
+                    trailLeft[i] = [];
+                    trailRight[i] = [];
+                }
+            }
+
+            let tipColors = {};
+            if (Object.keys(smoothLeft).length > 0 && Object.keys(smoothRight).length > 0) {
+                let sidePalette = [COLORS[0], COLORS[1], COLORS[2], COLORS[3]];
+                
+                for (let i = 0; i < 4; i++) {
+                    let pL1 = smoothLeft[i];
+                    let pL2 = smoothLeft[i+1];
+                    let pR2 = smoothRight[i+1];
+                    let pR1 = smoothRight[i];
+
+                    if (pL1 && pL2 && pR2 && pR1) {
+                        let color = sidePalette[i];
+                        tipColors[i] = color;
+                        tipColors[i+1] = color;
+
+                        canvasCtx.beginPath();
+                        canvasCtx.moveTo(pL1.x, pL1.y);
+                        canvasCtx.lineTo(pL2.x, pL2.y);
+                        canvasCtx.lineTo(pR2.x, pR2.y);
+                        canvasCtx.lineTo(pR1.x, pR1.y);
+                        canvasCtx.closePath();
+
+                        canvasCtx.fillStyle = `rgba(${color.r}, ${color.g}, ${color.b}, 0.35)`;
+                        canvasCtx.fill();
+                        canvasCtx.strokeStyle = "white";
+                        canvasCtx.lineWidth = 1.5;
+                        canvasCtx.stroke();
+                    }
+                }
+            }
+
+            function drawTrails(trailArray) {
+                trailArray.forEach((history, tipIdx) => {
+                    if (history.length < 2) return;
+                    let color = tipColors[tipIdx] || {r: 0, g: 255, b: 255};
+
+                    for (let i = 0; i < history.length - 1; i++) {
+                        let progress = i / history.length;
+                        let alpha = 0.8 * (1.0 - progress);
+                        let thickness = Math.max(1, 4 * (1.0 - progress));
+
+                        canvasCtx.beginPath();
+                        canvasCtx.moveTo(history[i].x, history[i].y);
+                        canvasCtx.lineTo(history[i+1].x, history[i+1].y);
+                        canvasCtx.strokeStyle = `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`;
+                        canvasCtx.lineWidth = thickness;
+                        canvasCtx.stroke();
+                    }
+                });
+            }
+
+            drawTrails(trailLeft);
+            drawTrails(trailRight);
+
             canvasCtx.restore();
-            requestAnimationFrame(predictWebcam);
+            requestAnimationFrame(renderLoop);
         }
+
+        // Mulai jalankan worker
+        initWorker();
     </script>
 </body>
 </html>
